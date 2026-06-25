@@ -275,7 +275,7 @@ class WebDAVServer {
     
     private func handlePROPFIND(_ request: HTTPRequest) -> HTTPResponse {
         let path = request.pathWithoutQuery
-        let depth = request.headers["depth"] ?? "0"
+        _ = request.headers["depth"] ?? "0"
         
         let exists = fileOps.exists(path)
         let isDir = fileOps.isDirectory(path)
