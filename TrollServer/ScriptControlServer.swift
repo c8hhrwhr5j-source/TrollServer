@@ -10,13 +10,16 @@ import Network
 class ScriptControlServer {
     
     private var listener: NWListener?
-    private let port: UInt16 = 8989
-    
-    // 转发目标（本地脚本 APP 端口）
-    private let forwardPort: UInt16 = 8899
+    private let port: UInt16
+    private let forwardPort: UInt16
     private let forwardHost = "127.0.0.1"
     
     private(set) var isRunning = false
+    
+    init(port: UInt16 = 8989, forwardPort: UInt16 = 8899) {
+        self.port = port
+        self.forwardPort = forwardPort
+    }
     
     // MARK: - 启动
     
