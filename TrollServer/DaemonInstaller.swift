@@ -7,27 +7,31 @@ import Foundation
 
 /// iOS 兼容的进程启动器（替代 macOS 专用 Process）
 private func launchTask(bin: String, args: [String], capture: Bool = false) -> (exitCode: Int32, output: String?) {
-    let argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
+    let argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) } + [nil]
     defer { argv.forEach { free($0) } }
     
     var pid: pid_t = 0
-    var childAttrs: posix_spawnattr_t?
+    var childAttrs: posix_spawnattr_t? = nil
     posix_spawnattr_init(&childAttrs)
+    defer { if childAttrs != nil { posix_spawnattr_destroy(&childAttrs) } }
     
     let status: Int32
     if capture {
         var pipeFD: [Int32] = [0, 0]
         pipe(&pipeFD)
+        defer { close(pipeFD[0]); close(pipeFD[1]) }
         
-        var fileActions: posix_spawn_file_actions_t?
+        var fileActions: posix_spawn_file_actions_t? = nil
         posix_spawn_file_actions_init(&fileActions)
+        defer { if fileActions != nil { posix_spawn_file_actions_destroy(&fileActions) } }
+        
         posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
         posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
         posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDERR_FILENO)
         posix_spawn_file_actions_addclose(&fileActions, pipeFD[1])
         
         status = posix_spawn(&pid, bin, &fileActions, &childAttrs,
-                             argv + [nil], environ)
+                             argv, environ)
         close(pipeFD[1])
         
         var output: String? = nil
@@ -42,21 +46,23 @@ private func launchTask(bin: String, args: [String], capture: Bool = false) -> (
             output = String(data: outData, encoding: .utf8)
             var st: Int32 = 0
             waitpid(pid, &st, 0)
+            close(pipeFD[0])
+            // 手动计算 exit code: WEXITSTATUS = (st >> 8) & 0xFF
+            let exitCode: Int32 = ((st >> 8) & 0xFF)
+            return (exitCode, output)
         }
         close(pipeFD[0])
-        if let fa = fileActions { posix_spawn_file_actions_destroy(fa) }
-        if let at = childAttrs { posix_spawnattr_destroy(at) }
-        return (status == 0 ? 0 : -1, output)
+        return (-1, nil)
     } else {
         status = posix_spawn(&pid, bin, nil, &childAttrs,
-                             argv + [nil], environ)
+                             argv, environ)
         if status == 0 {
             var st: Int32 = 0
             waitpid(pid, &st, 0)
-            if let at = childAttrs { posix_spawnattr_destroy(at) }
-            return (WIFEXITED(st) ? WEXITSTATUS(st) : -1, nil)
+            // 手动计算 exit code
+            let exitCode: Int32 = ((st >> 8) & 0xFF)
+            return (exitCode, nil)
         }
-        if let at = childAttrs { posix_spawnattr_destroy(at) }
         return (-1, nil)
     }
 }
