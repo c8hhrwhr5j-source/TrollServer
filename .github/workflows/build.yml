@@ -1,1 +1,128 @@
+name: Build TrollServer IPA
 
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 AppIcon (从 123.png 生成)
+        run: |
+          ICON_SRC="123.png"
+          ICON_OUT="build/icons"
+          rm -rf "$ICON_OUT"
+          mkdir -p "$ICON_OUT"
+
+          # iPhone 主屏幕图标 (Info.plist 中 CFBundleIconFiles = AppIcon60x60)
+          # 系统按命名约定查找: AppIcon60x60@2x.png (120px), AppIcon60x60@3x.png (180px)
+          sips -z 120 120 "$ICON_SRC" --out "$ICON_OUT/AppIcon60x60@2x.png"
+          sips -z 180 180 "$ICON_SRC" --out "$ICON_OUT/AppIcon60x60@3x.png"
+
+          # iPad 图标
+          sips -z 76  76  "$ICON_SRC" --out "$ICON_OUT/AppIcon76x76~ipad.png"
+          sips -z 152 152 "$ICON_SRC" --out "$ICON_OUT/AppIcon76x76@2x~ipad.png"
+
+          # App Store / 巨魔 图标
+          sips -z 1024 1024 "$ICON_SRC" --out "$ICON_OUT/iTunesArtwork@2x.png"
+          cp "$ICON_OUT/iTunesArtwork@2x.png" "$ICON_OUT/iTunesArtwork"
+
+          echo "图标生成完成:"
+          ls -la "$ICON_OUT/"
+
+      - name: 编译 Swift 源码
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          SDK_VER=$(xcrun --sdk iphoneos --show-sdk-version)
+          TARGET="arm64-apple-ios14.0"
+          BUILD_DIR="build"
+          APP_NAME="TrollServer"
+          mkdir -p "$BUILD_DIR"
+
+          SWIFT_FILES=(
+            "TrollServer/main.swift"
+            "TrollServer/AppDelegate.swift"
+            "TrollServer/ViewController.swift"
+            "TrollServer/DaemonServerRunner.swift"
+            "TrollServer/DaemonInstaller.swift"
+            "TrollServer/WebDAVServer.swift"
+            "TrollServer/ScriptControlServer.swift"
+            "TrollServer/FileOperations.swift"
+            "TrollServer/HTTPRequestParser.swift"
+          )
+
+          # 复制 Info.plist
+          cp "TrollServer/Info.plist" "$BUILD_DIR/Info.plist"
+
+          swiftc "${SWIFT_FILES[@]}" \
+            -sdk "$SDK_PATH" \
+            -target "$TARGET" \
+            -O \
+            -whole-module-optimization \
+            -framework UIKit \
+            -framework Foundation \
+            -framework Network \
+            -Xlinker -rpath -Xlinker /usr/lib/swift \
+            -Xlinker -sdk_version -Xlinker "$SDK_VER" \
+            -o "$BUILD_DIR/$APP_NAME"
+
+          echo "编译完成: $BUILD_DIR/$APP_NAME"
+
+      - name: 嵌入 entitlements
+        run: |
+          ENTITLEMENTS="TrollServer/TrollServer.entitlements"
+          APP_BIN="build/TrollServer"
+          if [ -f "$ENTITLEMENTS" ]; then
+            # TrollStore 会在安装时使用其自身的签名重签, 这里仅做占位签名
+            codesign --entitlements "$ENTITLEMENTS" -f -s - "$APP_BIN" || true
+            echo "entitlements 嵌入完成"
+          else
+            echo "[WARNING] 未找到 entitlements 文件, 跳过"
+          fi
+
+      - name: 打包 .app Bundle
+        run: |
+          APP_NAME="TrollServer"
+          PAYLOAD_DIR="build/Payload/${APP_NAME}.app"
+          mkdir -p "$PAYLOAD_DIR"
+
+          cp "build/$APP_NAME" "$PAYLOAD_DIR/$APP_NAME"
+          chmod +x "$PAYLOAD_DIR/$APP_NAME"
+          cp "TrollServer/Info.plist" "$PAYLOAD_DIR/Info.plist"
+
+          # 图标文件放入 .app 根目录 (系统根据 CFBundleIconFiles 查找)
+          cp build/icons/* "$PAYLOAD_DIR/"
+
+          echo "APPL????" > "$PAYLOAD_DIR/PkgInfo"
+          echo ".app 打包完成: $PAYLOAD_DIR"
+
+      - name: 生成 IPA
+        run: |
+          cd build
+          zip -qr "TrollServer.ipa" Payload/
+          cd ..
+          echo "IPA 生成: build/TrollServer.ipa"
+
+      - name: 上传 IPA (GitHub Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrollServer-iOS${{ github.run_number }}
+          path: build/TrollServer.ipa
+          retention-days: 30
+
+      - name: 显示安装说明
+        run: |
+          echo ""
+          echo "===================================="
+          echo "  IPA 构建成功!"
+          echo "===================================="
+          echo " 下载 IPA 后:"
+          echo " 1. 用巨魔(TrollStore)打开 IPA 安装"
+          echo " 2. 安装后打开一次 APP"
+          echo " 3. 端口 51111 (WebDAV) 和 8989 (脚本转发) 自动启动"
+          echo "===================================="
