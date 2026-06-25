@@ -5,7 +5,6 @@ import UIKit
 //  首次启动自动安装守护进程，支持后台任务
 // ============================================================
 
-@main
 class AppDelegate: UIResponder, UIApplicationDelegate {
     
     var window: UIWindow?
