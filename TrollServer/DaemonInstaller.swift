@@ -5,6 +5,62 @@ import Foundation
 //  使应用在设备启动时自动运行，无需手动打开
 // ============================================================
 
+/// iOS 兼容的进程启动器（替代 macOS 专用 Process）
+private func launchTask(bin: String, args: [String], capture: Bool = false) -> (exitCode: Int32, output: String?) {
+    let argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
+    defer { argv.forEach { free($0) } }
+    
+    var pid: pid_t = 0
+    var childAttrs: posix_spawnattr_t?
+    posix_spawnattr_init(&childAttrs)
+    
+    let status: Int32
+    if capture {
+        var pipeFD: [Int32] = [0, 0]
+        pipe(&pipeFD)
+        
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
+        posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDERR_FILENO)
+        posix_spawn_file_actions_addclose(&fileActions, pipeFD[1])
+        
+        status = posix_spawn(&pid, bin, &fileActions, &childAttrs,
+                             argv + [nil], environ)
+        close(pipeFD[1])
+        
+        var output: String? = nil
+        if status == 0 {
+            var outData = Data()
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let n = read(pipeFD[0], &buf, buf.count)
+                if n <= 0 { break }
+                outData.append(contentsOf: buf[0..<n])
+            }
+            output = String(data: outData, encoding: .utf8)
+            var st: Int32 = 0
+            waitpid(pid, &st, 0)
+        }
+        close(pipeFD[0])
+        if let fa = fileActions { posix_spawn_file_actions_destroy(fa) }
+        if let at = childAttrs { posix_spawnattr_destroy(at) }
+        return (status == 0 ? 0 : -1, output)
+    } else {
+        status = posix_spawn(&pid, bin, nil, &childAttrs,
+                             argv + [nil], environ)
+        if status == 0 {
+            var st: Int32 = 0
+            waitpid(pid, &st, 0)
+            if let at = childAttrs { posix_spawnattr_destroy(at) }
+            return (WIFEXITED(st) ? WEXITSTATUS(st) : -1, nil)
+        }
+        if let at = childAttrs { posix_spawnattr_destroy(at) }
+        return (-1, nil)
+    }
+}
+
 class DaemonInstaller {
     
     static let daemonLabel = "com.trollserver.fileserver"
@@ -67,25 +123,15 @@ class DaemonInstaller {
     
     /// 使用 launchctl 加载守护进程
     static func loadDaemon() -> Bool {
-        let task = Process()
-        task.launchPath = "/bin/launchctl"
-        task.arguments = ["load", daemonPlistPath]
-        
-        task.launch()
-        task.waitUntilExit()
-        print("[Daemon] launchctl load exit code: \(task.terminationStatus)")
-        return task.terminationStatus == 0
+        let result = launchTask(bin: "/bin/launchctl", args: ["load", daemonPlistPath])
+        print("[Daemon] launchctl load exit code: \(result.exitCode)")
+        return result.exitCode == 0
     }
     
     /// 卸载守护进程
     static func unload() -> Bool {
-        let task = Process()
-        task.launchPath = "/bin/launchctl"
-        task.arguments = ["unload", daemonPlistPath]
-        
-        task.launch()
-        task.waitUntilExit()
-        print("[Daemon] launchctl unload exit code: \(task.terminationStatus)")
+        let result = launchTask(bin: "/bin/launchctl", args: ["unload", daemonPlistPath])
+        print("[Daemon] launchctl unload exit code: \(result.exitCode)")
         
         // 删除 plist
         try? FileManager.default.removeItem(atPath: daemonPlistPath)
@@ -101,35 +147,15 @@ class DaemonInstaller {
     
     /// 检查守护进程是否正在运行
     static func isRunning() -> Bool {
-        let task = Process()
-        task.launchPath = "/bin/launchctl"
-        task.arguments = ["list", daemonLabel]
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        
-        task.launch()
-        task.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
+        let result = launchTask(bin: "/bin/launchctl", args: ["list", daemonLabel], capture: true)
+        let output = result.output ?? ""
         return output.contains("\"PID\"") || !output.contains("Could not find")
     }
     
     /// 获取守护进程 PID
     static func getPID() -> Int? {
-        let task = Process()
-        task.launchPath = "/bin/launchctl"
-        task.arguments = ["list", daemonLabel]
-        
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        
-        task.launch()
-        task.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
+        let result = launchTask(bin: "/bin/launchctl", args: ["list", daemonLabel], capture: true)
+        let output = result.output ?? ""
         
         for line in output.components(separatedBy: .newlines) {
             if line.contains("\"PID\"") {
