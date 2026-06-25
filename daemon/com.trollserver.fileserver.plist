@@ -1,1 +1,28 @@
-
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.trollserver.fileserver</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/TrollServer.app/TrollServer</string>
+		<string>--daemon</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>EnableTransactions</key>
+	<false/>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DYLD_INSERT_LIBRARIES</key>
+		<string></string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/var/mobile/Library/Logs/trollserver.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/mobile/Library/Logs/trollserver_error.log</string>
+</dict>
+</plist>
