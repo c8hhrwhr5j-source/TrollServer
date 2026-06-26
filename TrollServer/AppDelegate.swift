@@ -39,10 +39,36 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // 申请后台执行时间，让 Watchdog 完成自愈 + NWListener (includePeerToPeer) 启动
         // 正常情况守护进程接管，无需应用内服务器；若守护进程不可用，应用内 fallback 启动
         print("[AppDelegate] Entering background, requesting background task...")
+        
+        if backgroundTask != .invalid {
+            application.endBackgroundTask(backgroundTask)
+        }
+        
         backgroundTask = application.beginBackgroundTask(withName: "TrollServerBG") { [weak self] in
             print("[AppDelegate] Background task expiring (server should be alive via includePeerToPeer)")
             application.endBackgroundTask(self?.backgroundTask ?? .invalid)
             self?.backgroundTask = .invalid
+        }
+        
+        // 在后台任务中启动后台刷新定时器（每10分钟唤醒一次）
+        // 确保在长时间后台运行时，连接不会因为路由器超时而断开
+        startBackgroundRefresh()
+    }
+    
+    /// 启动后台刷新定时器
+    private func startBackgroundRefresh() {
+        let backgroundQueue = DispatchQueue.global(qos: .background)
+        backgroundQueue.asyncAfter(deadline: .now() + 300) { [weak self] in
+            // 每5分钟检测一次连接状态
+            guard let self = self else { return }
+            
+            if UIApplication.shared.applicationState == .background {
+                print("[AppDelegate] Background refresh: checking connection status...")
+                ServiceWatchdog.shared.healNow()
+                
+                // 继续调度下一次刷新
+                self.startBackgroundRefresh()
+            }
         }
     }
     

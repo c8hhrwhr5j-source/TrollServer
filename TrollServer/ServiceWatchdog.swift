@@ -49,6 +49,10 @@ class ServiceWatchdog {
     private let healCooldown: TimeInterval = 8
     private let checkInterval: TimeInterval = 12
     
+    // 增强：后台状态感知
+    private var appInBackground = false
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    
     private weak var serverRunner: DaemonServerRunner?
     private var isDaemonMode = false
     
@@ -62,6 +66,20 @@ class ServiceWatchdog {
         startTimer()
         queue.async { [weak self] in self?.healIfNeeded(force: true) }
         print("[Watchdog] App mode started (interval \(Int(checkInterval))s)")
+        
+        // 注册通知监听应用前后台切换
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppBackgroundChange),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppBackgroundChange),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
     }
     
     // MARK: - 启动（守护进程模式）
@@ -77,6 +95,51 @@ class ServiceWatchdog {
     func stop() {
         timer?.cancel()
         timer = nil
+        
+        // 清理通知监听
+        NotificationCenter.default.removeObserver(self)
+        
+        // 结束后台任务
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+    }
+    
+    /// 处理应用前后台状态变化
+    @objc private func handleAppBackgroundChange(_ notification: Notification) {
+        if notification.name == UIApplication.didEnterBackgroundNotification {
+            appInBackground = true
+            print("[Watchdog] App entered background, requesting background task...")
+            requestBackgroundTask()
+        } else {
+            appInBackground = false
+            print("[Watchdog] App entering foreground")
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
+            // 前台恢复时立即自愈
+            healNow()
+        }
+    }
+    
+    /// 请求后台执行时间，确保看门狗在后台继续运行
+    private func requestBackgroundTask() {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+        }
+        
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "TrollServerWatchdog") { [weak self] in
+            print("[Watchdog] Background task expiring")
+            UIApplication.shared.endBackgroundTask(self?.backgroundTask ?? .invalid)
+            self?.backgroundTask = .invalid
+        }
+        
+        // 在后台任务中立即执行一次检测
+        queue.async { [weak self] in
+            self?.healIfNeeded(force: true)
+        }
     }
     
     /// 前台恢复 / 应用激活时立即检测

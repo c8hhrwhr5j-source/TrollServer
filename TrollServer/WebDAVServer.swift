@@ -41,6 +41,16 @@ class WebDAVServer {
         // 关键修复: 允许在后台（应用挂起时）继续接受连接
         parameters.includePeerToPeer = true
         
+        // 增强后台连接稳定性：配置TCP KeepAlive参数
+        // 防止路由器/防火墙因长时间无数据而断开连接
+        parameters.defaultProtocolStack.transportProtocol = .tcp
+        if let tcpOptions = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcpOptions.enableKeepalive = true
+            tcpOptions.keepaliveIdle = 120 // 空闲120秒后发送第一个KeepAlive包
+            tcpOptions.keepaliveInterval = 30 // 后续KeepAlive包间隔30秒
+            tcpOptions.keepaliveCount = 5 // 失败5次后认为连接断开
+        }
+        
         // ===== 安全化 Bonjour 服务名 =====
         // iOS 设备名可能含中文/表情/特殊字符，需清理为合法 DNS 名
         // 仅保留 ASCII 字母数字和连字符，替换空格为连字符
@@ -331,6 +341,10 @@ class WebDAVServer {
             return handleHEAD(request)
         case "OPTIONS":
             return handleOPTIONS(request)
+        case "MOVE":
+            return handleMOVE(request)
+        case "COPY":
+            return handleCOPY(request)
         default:
             return HTTPResponse.methodNotAllowed()
         }
@@ -394,7 +408,7 @@ class WebDAVServer {
         }
     }
     
-    // MARK: - PUT - 上传/写入文件
+    // MARK: - PUT - 上传/写入文件（支持断点续传和进度监控）
     
     private func handlePUT(_ request: HTTPRequest) -> HTTPResponse {
         let path = request.pathWithoutQuery
@@ -403,16 +417,34 @@ class WebDAVServer {
             return HTTPResponse.internalServerError("Invalid path for PUT")
         }
         
+        let startTime = Date()
+        
         do {
+            // 检查是否为断点续传（Range请求头）
+            if let rangeHeader = request.headers["range"] {
+                return handlePartialPUT(request, path: path, rangeHeader: rangeHeader)
+            }
+            
             try fileOps.writeFile(request.body, to: path)
-            print("[WebDAV] PUT success: \(path) (\(request.body.count) bytes)")
-            return HTTPResponse.created()
+            
+            // 计算传输耗时和速度
+            let elapsed = Date().timeIntervalSince(startTime)
+            let speed = elapsed > 0 ? Double(request.body.count) / elapsed / 1024 : 0
+            
+            // 计算文件MD5校验和
+            let md5 = request.body.md5().hexString
+            print("[WebDAV] PUT success: \(path) (\(request.body.count) bytes, MD5: \(md5), \(String(format: "%.2f", speed)) KB/s)")
+            
+            return HTTPResponse.created(headers: [
+                "X-File-MD5": md5,
+                "X-Transfer-Time": String(format: "%.2f", elapsed),
+                "X-Transfer-Speed": String(format: "%.2f", speed)
+            ])
         } catch FileError.pathTraversal {
             print("[WebDAV] PUT blocked: path traversal attempt on \(path)")
             return HTTPResponse(statusCode: 403, statusMessage: "Forbidden", headers: [:], body: "Path traversal denied".data(using: .utf8)!)
         } catch {
             let nsErr = error as NSError
-            // 区分无权限/磁盘满 和 一般错误
             if nsErr.domain == NSCocoaErrorDomain {
                 switch nsErr.code {
                 case 513: // NSFileWriteNoPermissionError
@@ -429,6 +461,73 @@ class WebDAVServer {
             }
             print("[WebDAV] PUT error: \(path) -> \(error)")
             return HTTPResponse.internalServerError("Write failed: \(error.localizedDescription)")
+        }
+    }
+    
+    /// 处理断点续传请求（Partial PUT）
+    private func handlePartialPUT(_ request: HTTPRequest, path: String, rangeHeader: String) -> HTTPResponse {
+        // 解析 Range 头：格式 "bytes=start-end" 或 "bytes=start-"
+        let rangePrefix = "bytes="
+        guard rangeHeader.lowercased().hasPrefix(rangePrefix) else {
+            return HTTPResponse.badRequest("Invalid Range header format")
+        }
+        
+        let rangeValue = String(rangeHeader.dropFirst(rangePrefix.count))
+        let parts = rangeValue.components(separatedBy: "-")
+        
+        guard parts.count >= 1, let startOffset = Int64(parts[0]) else {
+            return HTTPResponse.badRequest("Invalid Range offset")
+        }
+        
+        do {
+            let fullPath = try fileOps.resolvePath(path)
+            let fm = FileManager.default
+            
+            // 检查文件是否存在
+            if !fm.fileExists(atPath: fullPath) {
+                // 文件不存在，视为完整上传
+                try fileOps.writeFile(request.body, to: path)
+                return HTTPResponse.created()
+            }
+            
+            // 获取现有文件大小
+            let existingAttributes = try fm.attributesOfItem(atPath: fullPath)
+            let existingSize = (existingAttributes[.size] as? Int64) ?? 0
+            
+            // 验证偏移量
+            if startOffset > existingSize {
+                return HTTPResponse.badRequest("Range offset exceeds file size")
+            }
+            
+            // 读取现有文件内容
+            var existingData = try Data(contentsOf: URL(fileURLWithPath: fullPath))
+            
+            // 截断到偏移位置并追加新数据
+            if startOffset < existingData.count {
+                existingData = existingData.subdata(in: 0..<Int(startOffset))
+            }
+            existingData.append(request.body)
+            
+            // 写入合并后的文件
+            try existingData.write(to: URL(fileURLWithPath: fullPath), options: .atomic)
+            
+            let totalSize = existingData.count
+            let md5 = existingData.md5().hexString
+            
+            print("[WebDAV] Partial PUT success: \(path) (offset: \(startOffset), total: \(totalSize) bytes, MD5: \(md5))")
+            
+            return HTTPResponse(
+                statusCode: 206, statusMessage: "Partial Content",
+                headers: [
+                    "Content-Range": "bytes \(startOffset)-\(totalSize-1)/\(totalSize)",
+                    "X-File-MD5": md5,
+                    "Content-Length": "\(totalSize)"
+                ],
+                body: Data()
+            )
+        } catch {
+            print("[WebDAV] Partial PUT error: \(path) -> \(error)")
+            return HTTPResponse.internalServerError("Partial write failed: \(error.localizedDescription)")
         }
     }
     
@@ -517,7 +616,7 @@ class WebDAVServer {
         }
     }
     
-    // MARK: - DELETE - 删除文件
+    // MARK: - DELETE - 删除文件/目录
     
     private func handleDELETE(_ request: HTTPRequest) -> HTTPResponse {
         let path = request.pathWithoutQuery
@@ -526,16 +625,89 @@ class WebDAVServer {
             return HTTPResponse.internalServerError("Cannot delete root")
         }
         
+        if !fileOps.exists(path) {
+            return HTTPResponse.notFound("File not found: \(path)")
+        }
+        
         do {
             try fileOps.deleteItem(path)
             print("[WebDAV] DELETE success: \(path)")
             return HTTPResponse(statusCode: 204, statusMessage: "No Content", headers: [:], body: Data())
+        } catch FileError.pathTraversal {
+            return HTTPResponse(statusCode: 403, statusMessage: "Forbidden", headers: [:], body: "Path traversal denied".data(using: .utf8)!)
         } catch {
+            print("[WebDAV] DELETE error: \(path) -> \(error)")
             return HTTPResponse.internalServerError("Delete failed: \(error.localizedDescription)")
         }
     }
     
-    // MARK: - HEAD - 文件头信息
+    // MARK: - MOVE - 移动/重命名文件
+    
+    private func handleMOVE(_ request: HTTPRequest) -> HTTPResponse {
+        let srcPath = request.pathWithoutQuery
+        
+        guard !srcPath.isEmpty, srcPath != "/" else {
+            return HTTPResponse.badRequest("Invalid source path")
+        }
+        
+        guard let destHeader = request.headers["destination"] else {
+            return HTTPResponse.badRequest("Destination header required")
+        }
+        
+        guard let destURL = URL(string: destHeader), let destPath = destURL.path.removingPercentEncoding else {
+            return HTTPResponse.badRequest("Invalid destination URL")
+        }
+        
+        if !fileOps.exists(srcPath) {
+            return HTTPResponse.notFound("Source not found: \(srcPath)")
+        }
+        
+        do {
+            try fileOps.moveFile(from: srcPath, to: destPath)
+            print("[WebDAV] MOVE success: \(srcPath) -> \(destPath)")
+            return HTTPResponse.created()
+        } catch FileError.pathTraversal {
+            return HTTPResponse(statusCode: 403, statusMessage: "Forbidden", headers: [:], body: "Path traversal denied".data(using: .utf8)!)
+        } catch {
+            print("[WebDAV] MOVE error: \(srcPath) -> \(destPath) -> \(error)")
+            return HTTPResponse.internalServerError("Move failed: \(error.localizedDescription)")
+        }
+    }
+    
+    // MARK: - COPY - 复制文件
+    
+    private func handleCOPY(_ request: HTTPRequest) -> HTTPResponse {
+        let srcPath = request.pathWithoutQuery
+        
+        guard !srcPath.isEmpty, srcPath != "/" else {
+            return HTTPResponse.badRequest("Invalid source path")
+        }
+        
+        guard let destHeader = request.headers["destination"] else {
+            return HTTPResponse.badRequest("Destination header required")
+        }
+        
+        guard let destURL = URL(string: destHeader), let destPath = destURL.path.removingPercentEncoding else {
+            return HTTPResponse.badRequest("Invalid destination URL")
+        }
+        
+        if !fileOps.exists(srcPath) {
+            return HTTPResponse.notFound("Source not found: \(srcPath)")
+        }
+        
+        do {
+            try fileOps.copyFile(from: srcPath, to: destPath)
+            print("[WebDAV] COPY success: \(srcPath) -> \(destPath)")
+            return HTTPResponse.created()
+        } catch FileError.pathTraversal {
+            return HTTPResponse(statusCode: 403, statusMessage: "Forbidden", headers: [:], body: "Path traversal denied".data(using: .utf8)!)
+        } catch {
+            print("[WebDAV] COPY error: \(srcPath) -> \(destPath) -> \(error)")
+            return HTTPResponse.internalServerError("Copy failed: \(error.localizedDescription)")
+        }
+    }
+    
+    // MARK: - HEAD - 文件头信息（支持断点续传检查）
     
     private func handleHEAD(_ request: HTTPRequest) -> HTTPResponse {
         let path = request.pathWithoutQuery
@@ -548,9 +720,28 @@ class WebDAVServer {
         let ext = (path as NSString).pathExtension.lowercased()
         let mime = mimeType(for: ext)
         
+        // 获取文件MD5校验和
+        var md5 = ""
+        do {
+            let fileData = try fileOps.readFile(at: path)
+            md5 = fileData.md5().hexString()
+        } catch {
+            print("[WebDAV] HEAD: failed to compute MD5 for \(path)")
+        }
+        
+        var headers: [String: String] = [
+            "Content-Type": mime,
+            "Content-Length": "\(size)",
+            "Accept-Ranges": "bytes"
+        ]
+        
+        if !md5.isEmpty {
+            headers["X-File-MD5"] = md5
+        }
+        
         return HTTPResponse(
             statusCode: 200, statusMessage: "OK",
-            headers: ["Content-Type": mime, "Content-Length": "\(size)"],
+            headers: headers,
             body: Data()
         )
     }
@@ -631,5 +822,35 @@ class WebDAVServer {
         let conn = connectionsHandled
         statsLock.unlock()
         return (conn, port, fileOps.basePath, isRunning)
+    }
+}
+
+// MARK: - MD5 计算扩展
+
+import CommonCrypto
+
+extension Data {
+    func md5() -> Data {
+        var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
+        self.withUnsafeBytes {
+            _ = CC_MD5($0.baseAddress, CC_LONG(self.count), &digest)
+        }
+        return Data(digest)
+    }
+    
+    func hexString() -> String {
+        return self.map { String(format: "%02hhx", $0) }.joined()
+    }
+}
+
+extension HTTPResponse {
+    static func created(headers: [String: String] = [:]) -> HTTPResponse {
+        var h = headers
+        h["Content-Length"] = "0"
+        return HTTPResponse(statusCode: 201, statusMessage: "Created", headers: h, body: Data())
+    }
+    
+    static func badRequest(_ message: String) -> HTTPResponse {
+        return HTTPResponse(statusCode: 400, statusMessage: "Bad Request", headers: [:], body: message.data(using: .utf8)!)
     }
 }
