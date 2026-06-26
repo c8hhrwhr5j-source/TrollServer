@@ -13,9 +13,6 @@ private func launchTask(bin: String, args: [String], capture: Bool = false) -> (
     defer { argv.forEach { free($0) } }
     
     var pid: pid_t = 0
-    var childAttrs: posix_spawnattr_t = posix_spawnattr_t()
-    posix_spawnattr_init(&childAttrs)
-    defer { posix_spawnattr_destroy(&childAttrs) }
     
     if capture {
         var pipeFD: [Int32] = [0, 0]
@@ -23,17 +20,17 @@ private func launchTask(bin: String, args: [String], capture: Bool = false) -> (
             return (-1, nil)
         }
         
-        var fileActions: posix_spawn_file_actions_t = posix_spawn_file_actions_t()
+        var fileActions: posix_spawn_file_actions_t? = nil
         posix_spawn_file_actions_init(&fileActions)
-        defer { posix_spawn_file_actions_destroy(&fileActions) }
         
         posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
         posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
         posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDERR_FILENO)
         posix_spawn_file_actions_addclose(&fileActions, pipeFD[1])
         
-        let spawnResult = posix_spawn(&pid, bin, &fileActions, &childAttrs,
-                                      argv, environ)
+        let spawnResult = posix_spawn(&pid, bin, &fileActions, nil, argv, environ)
+        
+        posix_spawn_file_actions_destroy(&fileActions)
         close(pipeFD[1])
         
         if spawnResult != 0 {
@@ -56,8 +53,7 @@ private func launchTask(bin: String, args: [String], capture: Bool = false) -> (
         let exitCode: Int32 = ((st >> 8) & 0xFF)
         return (exitCode, output)
     } else {
-        let spawnResult = posix_spawn(&pid, bin, nil, &childAttrs,
-                                      argv, environ)
+        let spawnResult = posix_spawn(&pid, bin, nil, nil, argv, environ)
         if spawnResult != 0 {
             return (-1, nil)
         }
