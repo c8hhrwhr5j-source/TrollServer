@@ -63,13 +63,11 @@ SWIFT_FILES=(
     "$SRC_DIR/main.swift"
     "$SRC_DIR/AppDelegate.swift"
     "$SRC_DIR/ViewController.swift"
-    "$SRC_DIR/DaemonServerRunner.swift"
-    "$SRC_DIR/DaemonInstaller.swift"
-    "$SRC_DIR/ServiceWatchdog.swift"
-    "$SRC_DIR/WebDAVServer.swift"
-    "$SRC_DIR/ScriptControlServer.swift"
-    "$SRC_DIR/FileOperations.swift"
-    "$SRC_DIR/HTTPRequestParser.swift"
+    "$SRC_DIR/TrollHTTPServer.swift"
+    "$SRC_DIR/KeepAliveManager.swift"
+    "$SRC_DIR/ServiceMonitor.swift"
+    "$SRC_DIR/BootstrapServices.swift"
+    "$SRC_DIR/UDPBroadcaster.swift"
 )
 
 # 创建临时 Info.plist 复制（避免编译时路径问题）
