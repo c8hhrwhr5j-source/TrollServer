@@ -432,7 +432,7 @@ class WebDAVServer {
             let speed = elapsed > 0 ? Double(request.body.count) / elapsed / 1024 : 0
             
             // 计算文件MD5校验和
-            let md5 = request.body.md5().hexString
+            let md5 = request.body.md5().hexString()
             print("[WebDAV] PUT success: \(path) (\(request.body.count) bytes, MD5: \(md5), \(String(format: "%.2f", speed)) KB/s)")
             
             return HTTPResponse.created(headers: [
@@ -512,7 +512,7 @@ class WebDAVServer {
             try existingData.write(to: URL(fileURLWithPath: fullPath), options: .atomic)
             
             let totalSize = existingData.count
-            let md5 = existingData.md5().hexString
+            let md5 = existingData.md5().hexString()
             
             print("[WebDAV] Partial PUT success: \(path) (offset: \(startOffset), total: \(totalSize) bytes, MD5: \(md5))")
             
