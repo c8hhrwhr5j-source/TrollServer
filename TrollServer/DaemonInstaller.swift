@@ -119,7 +119,7 @@ class DaemonInstaller {
         return false
     }
     
-    /// 若 plist 中可执行路径与当前不一致则自动更新（应用重装/更新后）
+    /// 若 plist 中可执行路径或关键配置与当前不一致则自动更新
     @discardableResult
     static func syncPlistIfNeeded() -> Bool {
         let currentExe = Bundle.main.executablePath ?? ""
@@ -132,8 +132,38 @@ class DaemonInstaller {
                   let args = plist["ProgramArguments"] as? [String],
                   let existingExe = args.first else { continue }
             
+            var needsUpdate = false
+            
+            // 检查可执行路径
             if existingExe != currentExe {
-                print("[Daemon] Executable path changed, auto-updating plist")
+                print("[Daemon] Executable path changed")
+                needsUpdate = true
+            }
+            
+            // 检查 KeepAlive 配置（新增 ThrottleInterval 时需要重建 plist）
+            if let keepAlive = plist["KeepAlive"] {
+                if let kaDict = keepAlive as? [String: Any] {
+                    // 旧格式：KeepAlive: { SuccessfulExit: false }
+                    // 需要更新为新格式：KeepAlive: true
+                    if kaDict["SuccessfulExit"] != nil {
+                        print("[Daemon] KeepAlive config outdated (dict → bool), updating")
+                        needsUpdate = true
+                    }
+                }
+            } else {
+                // 完全没有 KeepAlive → 需要更新
+                print("[Daemon] KeepAlive missing, updating")
+                needsUpdate = true
+            }
+            
+            // 检查 ThrottleInterval
+            if plist["ThrottleInterval"] == nil {
+                print("[Daemon] ThrottleInterval missing, updating")
+                needsUpdate = true
+            }
+            
+            if needsUpdate {
+                print("[Daemon] Plist config changed, auto-updating...")
                 print("[Daemon]   old: \(existingExe)")
                 print("[Daemon]   new: \(currentExe)")
                 return install()
@@ -170,10 +200,9 @@ class DaemonInstaller {
             ],
             "RunAtLoad": true,
             "StartOnMount": true,
-            "KeepAlive": [
-                "SuccessfulExit": false
-            ],
+            "KeepAlive": true,                // 无条件保活：被 iOS kill 后 launchd 立即重启
             "EnableTransactions": false,
+            "ThrottleInterval": 5,            // 崩溃后等待 5 秒再重启（防止快速重启循环）
             "EnvironmentVariables": [
                 "DYLD_INSERT_LIBRARIES": ""
             ],

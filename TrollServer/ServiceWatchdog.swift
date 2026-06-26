@@ -46,8 +46,8 @@ class ServiceWatchdog {
     private var timer: DispatchSourceTimer?
     private var isHealing = false
     private var lastHealTime: Date = .distantPast
-    private let healCooldown: TimeInterval = 30      // 自愈冷却：30 秒内最多触发一次
-    private let checkInterval: TimeInterval = 20       // 检测间隔：20 秒
+    private let healCooldown: TimeInterval = 120     // 自愈冷却：120 秒内最多触发一次（减少 CPU 开销）
+    private let checkInterval: TimeInterval = 60       // 检测间隔：60 秒（减少 CPU 开销，避免被 iOS kill）
     private let restartCooldown: TimeInterval = 10     // 单服务重启冷却：10 秒内不重复重启
     private var lastWebDAVHeal: Date = .distantPast
     private var lastScriptHeal: Date = .distantPast

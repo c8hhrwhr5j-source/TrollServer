@@ -51,10 +51,12 @@ if CommandLine.arguments.contains("--daemon") {
     runner.startDaemon()
     ServiceWatchdog.shared.startDaemonMode(serverRunner: runner)
     
-    // 保持进程存活（带心跳日志，方便诊断是否卡死）
-    Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
-        let uptime = ProcessInfo.processInfo.systemUptime
-        print("[TrollServer] Daemon heartbeat (uptime=\(Int(uptime))s)")
+    // 保持进程存活（带心跳日志，降低频率减少开销）
+    Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+        autoreleasepool {
+            let uptime = ProcessInfo.processInfo.systemUptime
+            print("[TrollServer] Daemon heartbeat (uptime=\(Int(uptime))s)")
+        }
     }
     
     RunLoop.main.run()
