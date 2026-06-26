@@ -38,9 +38,10 @@ struct HTTPRequest {
         let method = requestParts[0].uppercased()
         let rawPath = requestParts.dropFirst().first ?? "/"
         
-        // 分离路径和查询参数
+        // 分离路径和查询参数，并对 path 做 URL 解码（支持中文目录名）
         let pathComponents = rawPath.components(separatedBy: "?")
-        let pathWithoutQuery = pathComponents.first ?? "/"
+        let rawPathOnly = pathComponents.first ?? "/"
+        let pathWithoutQuery = rawPathOnly.removingPercentEncoding ?? rawPathOnly
         var queryParams: [String: String] = [:]
         
         if pathComponents.count > 1 {

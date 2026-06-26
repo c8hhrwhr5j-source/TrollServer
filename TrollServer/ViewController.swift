@@ -40,6 +40,15 @@ class ViewController: UIViewController {
         setupUI()
         startRefreshTimer()
         updateStatus()
+        
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(updateStatus),
+            name: .serviceWatchdogDidHeal, object: nil
+        )
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     override func viewWillDisappear(_ animated: Bool) {
@@ -60,7 +69,7 @@ class ViewController: UIViewController {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         
         let subtitleLabel = UILabel()
-        subtitleLabel.text = "文件服务 · 巨魔常驻版"
+        subtitleLabel.text = "文件服务 · 全自动常驻（看门狗 12s）"
         subtitleLabel.font = UIFont.systemFont(ofSize: 14)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.textAlignment = .center
@@ -110,7 +119,7 @@ class ViewController: UIViewController {
         restartWebDAVBtn.layer.cornerRadius = 8
         restartWebDAVBtn.contentEdgeInsets = UIEdgeInsets(top: 10, left: 20, bottom: 10, right: 20)
         
-        reloadDaemonBtn.setTitle("重载守护进程", for: .normal)
+        reloadDaemonBtn.setTitle("立即修复", for: .normal)
         reloadDaemonBtn.addTarget(self, action: #selector(reloadDaemon), for: .touchUpInside)
         reloadDaemonBtn.translatesAutoresizingMaskIntoConstraints = false
         reloadDaemonBtn.backgroundColor = .systemGray4
@@ -166,36 +175,40 @@ class ViewController: UIViewController {
         let iconStopped = "○"
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            // 单次调用获取完整守护进程状态（避免多次 launchctl 调用）
             let daemonStatus = DaemonInstaller.getStatus()
             let daemonInstalled = daemonStatus.installed
             let daemonRunning = daemonStatus.running
             let daemonPID = daemonStatus.pid
+            let port51111Up = LocalPortChecker.isOpen(51111)
+            let port8989Up = LocalPortChecker.isOpen(8989)
             
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 
                 let daemonIcon = daemonRunning ? iconRunning : iconStopped
-                let daemonColor = daemonRunning ? "运行中" : (daemonInstalled ? "已停止" : "未安装")
+                let daemonColor = daemonRunning ? "运行中" : (daemonInstalled ? "自动修复中…" : "自动安装中…")
                 self.daemonStatusLabel.attributedText = self.buildStatusLine(
                     icon: daemonIcon, title: "守护进程", detail: "\(daemonColor) \(daemonPID.map { "(PID: \($0))" } ?? "")",
                     ok: daemonRunning
                 )
                 
-                // WebDAV 状态
+                // WebDAV 状态（端口监听或守护进程托管即视为运行中）
                 let webdavStats = self.serverRunner.webdavServer?.getStats()
-                let wRunning = webdavStats?.running ?? false
+                let wRunning = port51111Up || daemonRunning || (webdavStats?.running ?? false)
                 let wConn = webdavStats?.connections ?? 0
                 let wPort = webdavStats?.port ?? 51111
+                let wDetail = daemonRunning && webdavStats?.running != true
+                    ? "端口 \(wPort) · 守护进程托管"
+                    : "端口 \(wPort) · \(wConn) 次请求"
                 self.webdavStatusLabel.attributedText = self.buildStatusLine(
                     icon: wRunning ? iconRunning : iconStopped,
-                    title: "WebDAV 文件服务", detail: "端口 \(wPort) · \(wConn) 次请求",
+                    title: "WebDAV 文件服务", detail: wDetail,
                     ok: wRunning
                 )
                 
                 // 脚本控制状态
                 let sStatus = self.serverRunner.scriptServer?.getStatus()
-                let sRunning = sStatus?.running ?? false
+                let sRunning = port8989Up || daemonRunning || (sStatus?.running ?? false)
                 self.scriptStatusLabel.attributedText = self.buildStatusLine(
                     icon: sRunning ? iconRunning : iconStopped,
                     title: "脚本控制 (转发)", detail: "端口 8989 → \(sStatus?.forwardTo ?? "localhost:8899")",
@@ -243,7 +256,7 @@ class ViewController: UIViewController {
     }
     
     @objc private func reloadDaemon() {
-        _ = DaemonInstaller.install()
+        ServiceWatchdog.shared.healNow()
         updateStatus()
     }
     

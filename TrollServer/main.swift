@@ -6,8 +6,11 @@ import Foundation
 // ============================================================
 
 if CommandLine.arguments.contains("--daemon") {
-    // 守护进程模式：无 UI，直接启动服务器
-    DaemonServerRunner().start()
+    // 守护进程模式：无 UI，启动服务 + 看门狗自愈
+    print("[TrollServer] Daemon mode starting...")
+    let runner = DaemonServerRunner()
+    runner.start()
+    ServiceWatchdog.shared.startDaemonMode(serverRunner: runner)
     RunLoop.main.run()
 } else {
     // 普通应用模式：带 UI

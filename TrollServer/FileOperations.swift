@@ -12,6 +12,23 @@ class FileOperations {
     
     init(basePath: String = "/var/mobile/Downloads") {
         self.basePath = (basePath as NSString).standardizingPath
+        ensureBaseDirectory()
+    }
+    
+    /// 启动时确保基础目录存在且可写
+    private func ensureBaseDirectory() {
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: basePath, isDirectory: &isDir) {
+            if isDir.boolValue { return }
+            print("[FileOps] WARNING: base path exists but is not a directory: \(basePath)")
+            return
+        }
+        do {
+            try fm.createDirectory(atPath: basePath, withIntermediateDirectories: true, attributes: nil)
+            print("[FileOps] Created base directory: \(basePath)")
+        } catch {
+            print("[FileOps] WARNING: cannot create base directory \(basePath): \(error)")
+        }
     }
     
     // MARK: - 路径安全
@@ -110,9 +127,14 @@ class FileOperations {
         }
     }
     
-    /// 创建目录（递归）
+    /// 创建目录（递归）；目录已存在时视为成功
     func createDirectory(_ relativePath: String) throws {
         let fullPath = try resolvePath(relativePath)
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: fullPath, isDirectory: &isDir) {
+            if isDir.boolValue { return }
+            throw FileError.notADirectory
+        }
         try fm.createDirectory(atPath: fullPath, withIntermediateDirectories: true, attributes: nil)
     }
     
@@ -174,4 +196,5 @@ enum FileError: Error {
     case encodingFailed
     case pathTraversal
     case notFound
+    case notADirectory
 }

@@ -279,12 +279,19 @@ class WebDAVServer {
             return HTTPResponse.internalServerError("Invalid path for MKCOL")
         }
         
+        // 目录已存在 → 201（WebDAV 兼容）
+        if fileOps.isDirectory(path) {
+            return HTTPResponse.created()
+        }
+        
         do {
             try fileOps.createDirectory(path)
             print("[WebDAV] MKCOL success: \(path)")
             return HTTPResponse.created()
+        } catch FileError.notADirectory {
+            return HTTPResponse.internalServerError("Path exists but is not a directory")
         } catch {
-            print("[WebDAV] MKCOL error: \(error)")
+            print("[WebDAV] MKCOL error: \(path) -> \(error)")
             return HTTPResponse.internalServerError("Mkdir failed: \(error.localizedDescription)")
         }
     }

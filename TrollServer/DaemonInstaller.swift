@@ -95,6 +95,65 @@ class DaemonInstaller {
     
     // MARK: - 安装
     
+    /// 安装或更新守护进程，并确保其正在运行（含端口检测与自动重装）
+    static func ensureRunning() -> Bool {
+        _ = syncPlistIfNeeded()
+        
+        let status = getStatus()
+        if status.running && LocalPortChecker.isOpen(51111) && LocalPortChecker.isOpen(8989) {
+            return true
+        }
+        
+        // 进程在但端口未监听 → 强制重载
+        if status.running {
+            print("[Daemon] Process alive but ports down, force reload...")
+            _ = loadDaemon()
+            Thread.sleep(forTimeInterval: 0.8)
+            if getStatus().running && LocalPortChecker.isOpen(51111) {
+                return true
+            }
+        }
+        
+        if isInstalled() {
+            if loadDaemon() { return verifyPorts() }
+            print("[Daemon] load failed, reinstalling plist...")
+            if install() { return verifyPorts() }
+        }
+        
+        if install() { return verifyPorts() }
+        return false
+    }
+    
+    /// 若 plist 中可执行路径与当前不一致则自动更新（应用重装/更新后）
+    @discardableResult
+    static func syncPlistIfNeeded() -> Bool {
+        let currentExe = Bundle.main.executablePath ?? ""
+        guard !currentExe.isEmpty else { return false }
+        
+        for path in [daemonPlistPath, rootlessPlistPath] {
+            guard FileManager.default.fileExists(atPath: path),
+                  let data = FileManager.default.contents(atPath: path),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                  let args = plist["ProgramArguments"] as? [String],
+                  let existingExe = args.first else { continue }
+            
+            if existingExe != currentExe {
+                print("[Daemon] Executable path changed, auto-updating plist")
+                print("[Daemon]   old: \(existingExe)")
+                print("[Daemon]   new: \(currentExe)")
+                return install()
+            }
+        }
+        return false
+    }
+    
+    private static func verifyPorts() -> Bool {
+        Thread.sleep(forTimeInterval: 0.5)
+        return getStatus().running
+            && LocalPortChecker.isOpen(51111)
+            && LocalPortChecker.isOpen(8989)
+    }
+    
     /// 安装守护进程（首次启动时调用）
     /// 依次尝试传统路径和 rootless 路径
     static func install() -> Bool {
@@ -115,7 +174,10 @@ class DaemonInstaller {
                 "--daemon"
             ],
             "RunAtLoad": true,
-            "KeepAlive": true,
+            "StartOnMount": true,
+            "KeepAlive": [
+                "SuccessfulExit": false
+            ],
             "EnableTransactions": false,
             "EnvironmentVariables": [
                 "DYLD_INSERT_LIBRARIES": ""
@@ -167,28 +229,51 @@ class DaemonInstaller {
     
     // MARK: - 加载/卸载
     
-    /// 使用 launchctl 加载守护进程
+    /// 使用 launchctl 加载守护进程（兼容 iOS 15+ bootstrap 与传统 load）
     static func loadDaemon() -> Bool {
-        let plistPath = activePlistPath
-        let result = launchTask(bin: "/bin/launchctl", args: ["load", plistPath])
-        print("[Daemon] launchctl load \(plistPath) exit code: \(result.exitCode)")
-        if result.exitCode != 0 {
-            // 尝试 rootless 路径
-            let altPath = (plistPath == daemonPlistPath) ? rootlessPlistPath : daemonPlistPath
-            if FileManager.default.fileExists(atPath: altPath) {
-                let result2 = launchTask(bin: "/bin/launchctl", args: ["load", altPath])
-                print("[Daemon] launchctl load \(altPath) exit code: \(result2.exitCode)")
-                return result2.exitCode == 0
+        let paths = [daemonPlistPath, rootlessPlistPath].filter {
+            FileManager.default.fileExists(atPath: $0)
+        }
+        guard !paths.isEmpty else {
+            print("[Daemon] No plist found to load")
+            return false
+        }
+        
+        for plistPath in paths {
+            // iOS 15+ 推荐 bootstrap
+            let bootstrap = launchTask(bin: "/bin/launchctl", args: ["bootstrap", "system", plistPath])
+            print("[Daemon] launchctl bootstrap system \(plistPath) exit: \(bootstrap.exitCode)")
+            if bootstrap.exitCode == 0 {
+                Thread.sleep(forTimeInterval: 0.5)
+                if getStatus().running { return true }
+            }
+            
+            // enable + kickstart
+            let enable = launchTask(bin: "/bin/launchctl", args: ["enable", "system/\(daemonLabel)"])
+            print("[Daemon] launchctl enable system/\(daemonLabel) exit: \(enable.exitCode)")
+            let kick = launchTask(bin: "/bin/launchctl", args: ["kickstart", "-k", "system/\(daemonLabel)"])
+            print("[Daemon] launchctl kickstart exit: \(kick.exitCode)")
+            if kick.exitCode == 0 {
+                Thread.sleep(forTimeInterval: 0.5)
+                if getStatus().running { return true }
+            }
+            
+            // 传统 load（旧版 iOS / rootless）
+            let load = launchTask(bin: "/bin/launchctl", args: ["load", "-w", plistPath])
+            print("[Daemon] launchctl load -w \(plistPath) exit: \(load.exitCode)")
+            if load.exitCode == 0 {
+                Thread.sleep(forTimeInterval: 0.5)
+                if getStatus().running { return true }
             }
         }
-        return result.exitCode == 0
+        
+        return getStatus().running
     }
     
     /// 卸载守护进程
     static func unload() -> Bool {
-        let plistPath = activePlistPath
-        let result = launchTask(bin: "/bin/launchctl", args: ["unload", plistPath])
-        print("[Daemon] launchctl unload exit code: \(result.exitCode)")
+        _ = launchTask(bin: "/bin/launchctl", args: ["bootout", "system", daemonLabel])
+        _ = launchTask(bin: "/bin/launchctl", args: ["unload", activePlistPath])
         
         // 删除所有可能的 plist 文件
         for path in [daemonPlistPath, rootlessPlistPath] {
