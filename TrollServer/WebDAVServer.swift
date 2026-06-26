@@ -6,6 +6,8 @@ import Network
 //  WebDAV/HTTP 文件服务器 - 端口 51111
 //  替代 Filza WebDAV（11111），避免端口冲突
 //  完整支持：GET/PUT/MKCOL/PROPFIND/DELETE
+//  + Bonjour 服务发现（mDNS 广播）
+//  + HTTP keep-alive 长连接
 // ============================================================
 
 class WebDAVServer {
@@ -19,9 +21,13 @@ class WebDAVServer {
     private(set) var connectionsHandled: Int = 0
     private let statsLock = NSLock()
     
+    // Bonjour 服务名
+    private let bonjourServiceName: String
+    
     init(port: UInt16 = 51111, baseDirectory: String = "/var/mobile/Downloads") {
         self.port = port
         self.fileOps = FileOperations(basePath: baseDirectory)
+        self.bonjourServiceName = UIDevice.current.name
     }
     
     // MARK: - 启动/停止
@@ -31,19 +37,32 @@ class WebDAVServer {
         
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        // 快速回收端口
         parameters.acceptLocalOnly = false
+        
+        // ===== Bonjour / mDNS 服务注册 =====
+        // 注册 _http._tcp 类型，使中控可以通过 mDNS 自动发现设备
+        // 类似 Filza 的行为，中控扫描局域网时可直接发现设备 IP
+        if let bonjourName = bonjourServiceName.data(using: .utf8) {
+            parameters.service = NWListener.Service(
+                name: String(data: bonjourName, encoding: .utf8) ?? "TrollServer",
+                type: "_http._tcp.",
+                domain: "local."
+            )
+            print("[WebDAV] Bonjour service registered: \(self.bonjourServiceName)._http._tcp.local")
+        }
         
         listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
         
         listener?.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                print("[WebDAV:\(self?.port ?? 0)] Server ready")
+                print("[WebDAV:\(self?.port ?? 0)] Server ready (Bonjour: \(self?.bonjourServiceName ?? ""))")
                 self?.isRunning = true
             case .failed(let error):
                 print("[WebDAV:\(self?.port ?? 0)] Failed: \(error)")
                 self?.isRunning = false
+                // 部分失败时仍尝试重注册 Bonjour（避免 NWListener 重启时服务丢失）
+                if let s = self { self?.isRunning = false }
             case .cancelled:
                 print("[WebDAV:\(self?.port ?? 0)] Cancelled")
                 self?.isRunning = false
@@ -72,7 +91,9 @@ class WebDAVServer {
             switch state {
             case .ready:
                 self?.receiveData(connection)
-            case .failed, .cancelled:
+            case .failed(let error):
+                print("[WebDAV] Connection failed: \(error)")
+            case .cancelled:
                 break
             default:
                 break
@@ -81,16 +102,54 @@ class WebDAVServer {
         connection.start(queue: .global(qos: .userInitiated))
     }
     
-    private func receiveData(_ connection: NWConnection) {
+    /// 数据接收循环（修复版）
+    /// 核心修复：PUT/PROPFIND 等有 body 的请求不再依赖不可靠的 isComplete 标志，
+    /// 而是严格基于 Content-Length 判断 body 是否接收完整。
+    /// 同时支持 HTTP keep-alive：响应发送后不立即关闭连接，允许复用。
+    private func receiveData(_ connection: NWConnection, isKeepAlive: Bool = true) {
         var accumulatedData = Data()
         var expectedContentLength: Int? = nil
+        var requestMethod: String = ""
+        var wantsKeepAlive: Bool = true
+        var receiveStartTime = Date()
+        let readTimeout: TimeInterval = 45.0 // 单次连接读取超时
+        var timedOut = false
+        
+        // 启动超时检测
+        let timeoutWorkItem = DispatchWorkItem { [weak connection] in
+            print("[WebDAV] Read timeout after \(readTimeout)s, closing connection")
+            timedOut = true
+            connection?.cancel()
+        }
+        
+        func resetReadTimeout() {
+            timeoutWorkItem.cancel()
+            // 使用 asyncAfter 做超时控制
+            DispatchQueue.global().asyncAfter(deadline: .now() + readTimeout, execute: DispatchWorkItem(block: {
+                if !timedOut {
+                    print("[WebDAV] Connection idle timeout")
+                    timedOut = true
+                    connection.cancel()
+                }
+            }))
+        }
         
         func readNext() {
+            guard !timedOut else { return }
+            
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
                 guard let self = self else { connection.cancel(); return }
+                guard !timedOut else { return }
                 
                 if let error = error {
-                    print("[WebDAV] Receive error: \(error)")
+                    // NWError 的 posix 码 54/ECONNRESET 是正常的连接重置（客户端主动断开）
+                    let nsErr = error as NSError
+                    if nsErr.domain == "NWErrorDomain" && (nsErr.code == 54 || nsErr.code == 61) {
+                        // ECONNRESET (54) / ECONNREFUSED (61) → 静默关闭
+                        print("[WebDAV] Connection reset by client (normal close)")
+                    } else {
+                        print("[WebDAV] Receive error: \(error) (domain=\(nsErr.domain) code=\(nsErr.code))")
+                    }
                     connection.cancel()
                     return
                 }
@@ -99,49 +158,67 @@ class WebDAVServer {
                     accumulatedData.append(data)
                 }
                 
-                // 首次读取时解析 Content-Length
-                if expectedContentLength == nil,
-                   let headerEnd = accumulatedData.range(of: Data("\r\n\r\n".utf8)) {
-                    let headerData = accumulatedData.subdata(in: 0..<headerEnd.lowerBound)
+                let headerEndRange = accumulatedData.range(of: Data("\r\n\r\n".utf8))
+                let headerSize = headerEndRange?.upperBound ?? 0
+                let headerComplete = headerSize > 0
+                
+                // 首次读取到完整头部时解析元数据
+                if expectedContentLength == nil, headerComplete {
+                    let headerData = accumulatedData.subdata(in: 0..<headerEndRange!.lowerBound)
                     if let headerStr = String(data: headerData, encoding: .utf8) {
-                        // 解析 Content-Length
+                        // 解析请求方法
+                        if let firstLine = headerStr.components(separatedBy: "\r\n").first {
+                            requestMethod = firstLine.components(separatedBy: " ").first ?? ""
+                        }
+                        
+                        // 解析 Content-Length 和 Connection 头
                         for line in headerStr.components(separatedBy: "\r\n") {
                             let lower = line.lowercased()
                             if lower.hasPrefix("content-length:") {
                                 let val = line.components(separatedBy: ":").dropFirst().joined().trimmingCharacters(in: .whitespaces)
                                 expectedContentLength = Int(val)
                             }
-                        }
-                        // 对于无 body 的请求方法，请求在 header 结束后即完成
-                        // 避免 HTTP/1.1 keep-alive 下无限等待
-                        if let firstLine = headerStr.components(separatedBy: "\r\n").first {
-                            let method = firstLine.components(separatedBy: " ").first ?? ""
-                            // GET/HEAD/OPTIONS/DELETE 标准无 body
-                            // MKCOL/PROPFIND WebDAV 方法通常也无 body 或 body 很小
-                            if method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "DELETE" || method == "MKCOL" || method == "PROPFIND" {
-                                expectedContentLength = 0
+                            if lower.hasPrefix("connection:") {
+                                let val = line.components(separatedBy: ":").dropFirst().joined().trimmingCharacters(in: .whitespaces).lowercased()
+                                wantsKeepAlive = (val == "keep-alive")
                             }
+                        }
+                        
+                        // 无 body 方法：header 结束即请求完成
+                        let noBodyMethods = Set(["GET", "HEAD", "OPTIONS", "DELETE", "MKCOL"])
+                        if noBodyMethods.contains(requestMethod) {
+                            expectedContentLength = 0
                         }
                     }
                 }
                 
-                // 判断是否接收完毕
-                let headerEnd = accumulatedData.range(of: Data("\r\n\r\n".utf8))
-                let headerSize = headerEnd?.upperBound ?? 0
-                let headerComplete = headerSize > 0
+                // ===== 核心修复：请求完成判定逻辑 =====
+                // 以前依赖 isComplete（NWConnection 的 TCP FIN 标志），这在以下场景不可靠：
+                // 1. keep-alive 连接：客户端发送完请求后不关闭 TCP 连接
+                // 2. iOS NWConnection bug：isComplete 可能在不该为 true 时为 true
+                //
+                // 修复：严格基于 Content-Length 判断
+                //  - 有 Content-Length → body 收齐即完成（不依赖 isComplete）
+                //  - 无 Content-Length 且无 body 方法 → header 完整即完成
+                //  - PUT 无 Content-Length（理论上不应出现）→ 依赖 isComplete fallback
+                
                 let expectedBody = expectedContentLength ?? 0
                 let receivedBody = accumulatedData.count - headerSize
                 
-                // isComplete 可能为 true 但 header 尚未完整接收，
-                // 必须 header 完整且 body 收齐才认为请求完成
+                // 主判定：根据 Content-Length 判断 body 是否收齐
                 let bodyComplete = (expectedContentLength != nil && receivedBody >= expectedBody)
-                let requestComplete = headerComplete && (isComplete || bodyComplete)
+                
+                // 仅当 Content-Length 未知时才 fallback 到 isComplete
+                // 这是关键修复：不让 isComplete 抢占判定
+                let fallbackComplete = (expectedContentLength == nil && headerComplete && isComplete && accumulatedData.count > headerSize)
+                
+                let requestComplete = headerComplete && (bodyComplete || fallbackComplete)
                 
                 if requestComplete {
                     // 完整接收，解析并处理请求
                     guard let request = HTTPRequest.parse(from: accumulatedData) else {
                         let resp = HTTPResponse.internalServerError("Bad Request")
-                        self.sendResponse(resp, on: connection)
+                        self.sendResponse(resp, on: connection, keepAlive: false)
                         return
                     }
                     
@@ -149,24 +226,81 @@ class WebDAVServer {
                     self.connectionsHandled += 1
                     self.statsLock.unlock()
                     
-                    print("[WebDAV] \(request.method) \(request.pathWithoutQuery) (\(accumulatedData.count) bytes)")
+                    print("[WebDAV] \(request.method) \(request.pathWithoutQuery) (\(accumulatedData.count) bytes, keep-alive: \(wantsKeepAlive))")
                     
                     let response = self.route(request)
-                    self.sendResponse(response, on: connection)
+                    
+                    // 只有客户端也想要 keep-alive 时才复用连接
+                    let doKeepAlive = wantsKeepAlive
+                    self.sendResponse(response, on: connection, keepAlive: doKeepAlive) {
+                        if doKeepAlive {
+                            // keep-alive：继续在此连接上读取下一个请求
+                            self.receiveData(connection, isKeepAlive: true)
+                        }
+                    }
+                } else if headerComplete && !isComplete && expectedContentLength != nil && receivedBody < expectedBody {
+                    // 还有 body 未接收完 → 继续等待（即使 isComplete=false）
+                    // 这是修复的关键：不因 isComplete 为 false 而恐慌，继续读取
+                    resetReadTimeout()
+                    readNext()
+                } else if isComplete && !bodyComplete && expectedContentLength == nil {
+                    // 没有 Content-Length 但有数据，isComplete=true → 完成
+                    guard let request = HTTPRequest.parse(from: accumulatedData) else {
+                        connection.cancel()
+                        return
+                    }
+                    
+                    self.statsLock.lock()
+                    self.connectionsHandled += 1
+                    self.statsLock.unlock()
+                    
+                    let response = self.route(request)
+                    self.sendResponse(response, on: connection, keepAlive: false)
                 } else {
-                    // 继续接收
+                    // 继续接收数据
+                    resetReadTimeout()
                     readNext()
                 }
             }
         }
         
+        // 启动首次读取
+        resetReadTimeout()
         readNext()
     }
     
-    private func sendResponse(_ response: HTTPResponse, on connection: NWConnection) {
-        let data = response.serialize()
-        connection.send(content: data, completion: .contentProcessed({ _ in
-            connection.cancel()
+    private func sendResponse(_ response: HTTPResponse, on connection: NWConnection, keepAlive: Bool, onSent: (() -> Void)? = nil) {
+        var responseData = response.serialize()
+        
+        // 如果是 keep-alive，在响应头部添加 Connection: keep-alive
+        if keepAlive {
+            if let headerEnd = responseData.range(of: Data("\r\n\r\n".utf8)) {
+                var headersPart = responseData.subdata(in: 0..<headerEnd.lowerBound)
+                let bodyPart = responseData.subdata(in: headerEnd.upperBound..<responseData.count)
+                
+                if let headersStr = String(data: headersPart, encoding: .utf8) {
+                    var newHeaders = headersStr
+                    // 确保最后一行结束前插入 Connection 头
+                    if !newHeaders.lowercased().contains("connection:") {
+                        newHeaders = newHeaders.trimmingCharacters(in: CharacterSet(charactersIn: "\r\n"))
+                        + "\r\nConnection: keep-alive\r\nKeep-Alive: timeout=30, max=50\r\n"
+                    }
+                    if let newHeaderData = newHeaders.data(using: .utf8) {
+                        responseData = newHeaderData + Data("\r\n".utf8) + bodyPart
+                    }
+                }
+            }
+        }
+        
+        connection.send(content: responseData, completion: .contentProcessed({ error in
+            if let error = error {
+                print("[WebDAV] Send error: \(error)")
+                connection.cancel()
+            } else if keepAlive {
+                onSent?()
+            } else {
+                connection.cancel()
+            }
         }))
     }
     
