@@ -43,13 +43,12 @@ class WebDAVServer {
         
         // 增强后台连接稳定性：配置TCP KeepAlive参数
         // 防止路由器/防火墙因长时间无数据而断开连接
-        parameters.defaultProtocolStack.transportProtocol = .tcp
-        if let tcpOptions = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
-            tcpOptions.enableKeepalive = true
-            tcpOptions.keepaliveIdle = 120 // 空闲120秒后发送第一个KeepAlive包
-            tcpOptions.keepaliveInterval = 30 // 后续KeepAlive包间隔30秒
-            tcpOptions.keepaliveCount = 5 // 失败5次后认为连接断开
-        }
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.enableKeepalive = true
+        tcpOptions.keepaliveIdle = 120 // 空闲120秒后发送第一个KeepAlive包
+        tcpOptions.keepaliveInterval = 30 // 后续KeepAlive包间隔30秒
+        tcpOptions.keepaliveCount = 5 // 失败5次后认为连接断开
+        parameters.defaultProtocolStack.transportProtocol = tcpOptions
         
         // ===== 安全化 Bonjour 服务名 =====
         // iOS 设备名可能含中文/表情/特殊字符，需清理为合法 DNS 名
