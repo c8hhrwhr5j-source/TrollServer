@@ -164,36 +164,23 @@ class WebDAVServer {
         return Date().timeIntervalSince(serverStartTime)
     }
     
-    // MARK: - 连接处理（带防崩溃保护）
+    // MARK: - 连接处理
     
     private func handleNewConnection(_ connection: NWConnection) {
         connection.stateUpdateHandler = { [weak self] state in
-            autoreleasepool {
-                switch state {
-                case .ready:
-                    self?.receiveDataSafe(connection)
-                case .failed(let error):
-                    print("[WebDAV] Connection failed: \(error)")
-                case .cancelled:
-                    break
-                default:
-                    break
-                }
+            switch state {
+            case .ready:
+                // 直接进入接收循环（全局异常保护由 main.swift 的 NSSetUncaughtExceptionHandler 提供）
+                self?.receiveData(connection)
+            case .failed(let error):
+                print("[WebDAV] Connection failed: \(error)")
+            case .cancelled:
+                break
+            default:
+                break
             }
         }
         connection.start(queue: .global(qos: .userInitiated))
-    }
-    
-    /// 带崩溃保护的接收循环包装器
-    /// 任何单个连接上的异常都不应导致整个守护进程退出
-    private func receiveDataSafe(_ connection: NWConnection, isKeepAlive: Bool = true) {
-        let ok = TrollServerTryCatch.run {
-            self.receiveData(connection, isKeepAlive: isKeepAlive)
-        }
-        if !ok {
-            print("[WebDAV] ⚠️ Connection handler crashed, closing connection to protect daemon")
-            connection.cancel()
-        }
     }
     
     /// 数据接收循环（修复版）
