@@ -50,6 +50,7 @@ jobs:
             "TrollServer/ViewController.swift"
             "TrollServer/DaemonServerRunner.swift"
             "TrollServer/DaemonInstaller.swift"
+            "TrollServer/ServiceWatchdog.swift"
             "TrollServer/WebDAVServer.swift"
             "TrollServer/ScriptControlServer.swift"
             "TrollServer/FileOperations.swift"
