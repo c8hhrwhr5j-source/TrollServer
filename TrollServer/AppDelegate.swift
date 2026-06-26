@@ -35,17 +35,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidEnterBackground(_ application: UIApplication) {
         // 进入后台前再尝试一次确保守护进程接管
         ServiceWatchdog.shared.healNow()
+        
+        // 申请后台执行时间，让 Watchdog 完成自愈 + NWListener (includePeerToPeer) 启动
+        // 正常情况守护进程接管，无需应用内服务器；若守护进程不可用，应用内 fallback 启动
+        print("[AppDelegate] Entering background, requesting background task...")
         backgroundTask = application.beginBackgroundTask(withName: "TrollServerBG") { [weak self] in
+            print("[AppDelegate] Background task expiring (server should be alive via includePeerToPeer)")
             application.endBackgroundTask(self?.backgroundTask ?? .invalid)
             self?.backgroundTask = .invalid
         }
     }
     
     func applicationWillEnterForeground(_ application: UIApplication) {
+        print("[AppDelegate] Entering foreground")
         if backgroundTask != .invalid {
             application.endBackgroundTask(backgroundTask)
             backgroundTask = .invalid
         }
+        // 前台恢复时立即自愈，确保 NWListener 重新激活
         ServiceWatchdog.shared.healNow()
     }
     

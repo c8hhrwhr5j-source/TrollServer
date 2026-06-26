@@ -152,11 +152,11 @@ class ServiceWatchdog {
             }
         }
         
-        // 3. 守护进程仍不可用 → 应用在前台时启动 fallback
+        // 3. 守护进程仍不可用 → 启动应用内 fallback（含后台场景）
         let webdavNow = LocalPortChecker.isOpen(51111)
         let scriptNow = LocalPortChecker.isOpen(8989)
         if !webdavNow || !scriptNow {
-            startInAppFallbackIfActive()
+            startInAppFallback()
         }
         
         notifyStatusChanged()
@@ -174,16 +174,27 @@ class ServiceWatchdog {
         }
     }
     
-    private func startInAppFallbackIfActive() {
+    /// 当守护进程不可用时，在应用内启动 fallback 服务（含后台场景）
+    /// includePeerToPeer 已启用，NWListener 可在后台继续监听
+    private func startInAppFallback() {
         DispatchQueue.main.async { [weak self] in
             guard let runner = self?.serverRunner else { return }
-            let state = UIApplication.shared.applicationState
-            guard state == .active || state == .inactive else {
-                print("[Watchdog] App in background, relying on daemon")
+            
+            // 端口已被占用（守护进程或其他进程已在监听）→ 跳过
+            guard !LocalPortChecker.isOpen(51111) else {
+                print("[Watchdog] Port 51111 already open (daemon/other), skip in-app fallback")
+                self?.stopInAppServersIfRunning()
                 return
             }
-            guard !LocalPortChecker.isOpen(51111) else { return }
-            print("[Watchdog] Starting in-app fallback servers")
+            
+            // 应用内服务器已在运行 → 跳过
+            guard runner.webdavServer?.getStats().running != true else {
+                print("[Watchdog] In-app server already running")
+                return
+            }
+            
+            let state = UIApplication.shared.applicationState
+            print("[Watchdog] Starting in-app fallback servers (appState=\(state.rawValue), includePeerToPeer enabled)")
             runner.start()
         }
     }

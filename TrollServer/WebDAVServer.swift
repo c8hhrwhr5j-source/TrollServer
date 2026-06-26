@@ -38,19 +38,30 @@ class WebDAVServer {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         parameters.acceptLocalOnly = false
+        // 关键修复: 允许在后台（应用挂起时）继续接受连接
+        parameters.includePeerToPeer = true
         
-        listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        // ===== 安全化 Bonjour 服务名 =====
+        // iOS 设备名可能含中文/表情/特殊字符，需清理为合法 DNS 名
+        // 仅保留 ASCII 字母数字和连字符，替换空格为连字符
+        var safeName = bonjourServiceName
+            .replacingOccurrences(of: " ", with: "-")
+            .filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+        if safeName.isEmpty {
+            safeName = "TrollServer"
+        }
+        if safeName.count > 63 {
+            safeName = String(safeName.prefix(63))
+        }
         
-        // ===== Bonjour / mDNS 服务注册 =====
-        // 注册 _http._tcp 类型，使中控可以通过 mDNS 自动发现设备
-        // 类似 Filza 的行为，中控扫描局域网时可直接发现设备 IP
-        // 注意：service 属性须在 NWListener 创建后设置（NWParameters 无此属性）
-        listener?.service = NWListener.Service(
-            name: bonjourServiceName,
+        let service = NWListener.Service(
+            name: safeName,
             type: "_http._tcp.",
             domain: "local."
         )
-        print("[WebDAV] Bonjour service registered: \(bonjourServiceName)._http._tcp.local")
+        
+        listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        listener?.service = service
         
         listener?.stateUpdateHandler = { [weak self] state in
             switch state {
