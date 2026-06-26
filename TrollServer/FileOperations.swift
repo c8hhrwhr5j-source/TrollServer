@@ -3,32 +3,81 @@ import Foundation
 // ============================================================
 //  文件系统操作 - 基于 FileManager 的安全文件读写
 //  所有路径操作均以设定的基础目录为根，防止路径穿越
+//  支持权限受限时自动降级到沙盒 Documents 目录
 // ============================================================
 
 class FileOperations {
     
-    let basePath: String
+    private(set) var basePath: String
     private let fm = FileManager.default
     
+    /// 沙盒 Documents 降级目录（当主目录无写权限时使用）
+    static let sandboxDocumentsPath: String = {
+        if let docs = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first {
+            return (docs as NSString).appendingPathComponent("TrollServer")
+        }
+        // 终极降级：使用 /tmp
+        return "/tmp/TrollServer"
+    }()
+    
     init(basePath: String = "/var/mobile/Downloads") {
-        self.basePath = (basePath as NSString).standardizingPath
-        ensureBaseDirectory()
+        let requested = (basePath as NSString).standardizingPath
+        let fallback = (Self.sandboxDocumentsPath as NSString).standardizingPath
+        
+        // 验证主目录可用性，不可用则降级到沙盒
+        let (verifiedPath, source) = Self.resolveUsableBasePath(requested: requested, fallback: fallback)
+        self.basePath = verifiedPath
+        
+        if source == "fallback" {
+            print("[FileOps] ⚠️ 主目录 \(requested) 不可用，已降级到沙盒: \(verifiedPath)")
+        } else {
+            print("[FileOps] 使用基础目录: \(verifiedPath)")
+        }
     }
     
-    /// 启动时确保基础目录存在且可写
-    private func ensureBaseDirectory() {
+    /// 验证并选择可用的基础目录
+    /// - Returns: (可用路径, 来源 "primary"/"fallback")
+    private static func resolveUsableBasePath(requested: String, fallback: String) -> (String, String) {
+        let fm = FileManager.default
+        
+        // 1. 检查主目录是否已存在且可写
         var isDir: ObjCBool = false
-        if fm.fileExists(atPath: basePath, isDirectory: &isDir) {
-            if isDir.boolValue { return }
-            print("[FileOps] WARNING: base path exists but is not a directory: \(basePath)")
-            return
+        if fm.fileExists(atPath: requested, isDirectory: &isDir) {
+            if isDir.boolValue {
+                if fm.isWritableFile(atPath: requested) {
+                    return (requested, "primary")
+                }
+                print("[FileOps] 主目录 \(requested) 存在但不可写")
+            } else {
+                print("[FileOps] 主目录路径存在但不是目录: \(requested)")
+            }
         }
+        
+        // 2. 尝试创建主目录
         do {
-            try fm.createDirectory(atPath: basePath, withIntermediateDirectories: true, attributes: nil)
-            print("[FileOps] Created base directory: \(basePath)")
+            try fm.createDirectory(atPath: requested, withIntermediateDirectories: true, attributes: nil)
+            if fm.isWritableFile(atPath: requested) {
+                print("[FileOps] 已创建主目录: \(requested)")
+                return (requested, "primary")
+            }
         } catch {
-            print("[FileOps] WARNING: cannot create base directory \(basePath): \(error)")
+            print("[FileOps] 无法创建主目录 \(requested): \(error)")
         }
+        
+        // 3. 降级到沙盒目录
+        do {
+            try fm.createDirectory(atPath: fallback, withIntermediateDirectories: true, attributes: nil)
+            print("[FileOps] 已创建降级目录: \(fallback)")
+            return (fallback, "fallback")
+        } catch {
+            print("[FileOps] 严重错误: 无法创建降级目录 \(fallback): \(error)")
+        }
+        
+        // 4. 最后尝试 /tmp（总是可写）
+        let tmp = "/tmp/TrollServer"
+        try? fm.createDirectory(atPath: tmp, withIntermediateDirectories: true, attributes: nil)
+        print("[FileOps] 终极降级到 /tmp: \(tmp)")
+        return (tmp, "fallback")
     }
     
     // MARK: - 路径安全

@@ -264,8 +264,27 @@ class WebDAVServer {
             try fileOps.writeFile(request.body, to: path)
             print("[WebDAV] PUT success: \(path) (\(request.body.count) bytes)")
             return HTTPResponse.created()
+        } catch FileError.pathTraversal {
+            print("[WebDAV] PUT blocked: path traversal attempt on \(path)")
+            return HTTPResponse(statusCode: 403, statusMessage: "Forbidden", headers: [:], body: "Path traversal denied".data(using: .utf8)!)
         } catch {
-            print("[WebDAV] PUT error: \(error)")
+            let nsErr = error as NSError
+            // 区分无权限/磁盘满 和 一般错误
+            if nsErr.domain == NSCocoaErrorDomain {
+                switch nsErr.code {
+                case 513: // NSFileWriteNoPermissionError
+                    print("[WebDAV] PUT permission denied: \(path)")
+                    return HTTPResponse(statusCode: 403, statusMessage: "Forbidden",
+                        headers: [:], body: "Permission denied: \(error.localizedDescription)".data(using: .utf8)!)
+                case 640: // NSFileWriteOutOfSpaceError
+                    print("[WebDAV] PUT out of space: \(path)")
+                    return HTTPResponse(statusCode: 507, statusMessage: "Insufficient Storage",
+                        headers: [:], body: "Disk full".data(using: .utf8)!)
+                default:
+                    break
+                }
+            }
+            print("[WebDAV] PUT error: \(path) -> \(error)")
             return HTTPResponse.internalServerError("Write failed: \(error.localizedDescription)")
         }
     }
@@ -279,9 +298,25 @@ class WebDAVServer {
             return HTTPResponse.internalServerError("Invalid path for MKCOL")
         }
         
-        // 目录已存在 → 201（WebDAV 兼容）
+        // 目录已存在 → 201 Created（WebDAV 标准）
         if fileOps.isDirectory(path) {
             return HTTPResponse.created()
+        }
+        
+        // 检查父目录是否存在（给客户端更精确的错误信息）
+        let parentPath = (path as NSString).deletingLastPathComponent
+        if !parentPath.isEmpty && parentPath != "/" {
+            let parentExists = fileOps.exists(parentPath)
+            if !parentExists {
+                // 父目录不存在，尝试创建父目录
+                print("[WebDAV] MKCOL parent missing, creating: \(parentPath)")
+                do {
+                    try fileOps.createDirectory(parentPath)
+                } catch {
+                    print("[WebDAV] MKCOL cannot create parent \(parentPath): \(error)")
+                    // 继续尝试创建目标目录（createDirectory 本身就是递归的）
+                }
+            }
         }
         
         do {
@@ -290,7 +325,15 @@ class WebDAVServer {
             return HTTPResponse.created()
         } catch FileError.notADirectory {
             return HTTPResponse.internalServerError("Path exists but is not a directory")
+        } catch FileError.pathTraversal {
+            return HTTPResponse(statusCode: 403, statusMessage: "Forbidden", headers: [:], body: "Path traversal denied".data(using: .utf8)!)
         } catch {
+            let nsErr = error as NSError
+            if nsErr.domain == NSCocoaErrorDomain && nsErr.code == 513 {
+                print("[WebDAV] MKCOL permission denied: \(path)")
+                return HTTPResponse(statusCode: 403, statusMessage: "Forbidden",
+                    headers: [:], body: "Permission denied".data(using: .utf8)!)
+            }
             print("[WebDAV] MKCOL error: \(path) -> \(error)")
             return HTTPResponse.internalServerError("Mkdir failed: \(error.localizedDescription)")
         }

@@ -13,32 +13,38 @@ struct HTTPRequest {
     let headers: [String: String]
     let body: Data
     
-    /// 从原始字节流解析 HTTP 请求
+    /// 从原始字节流解析 HTTP 请求（二进制安全版本）
+    /// 关键修复：之前将整个 data（含二进制 body）尝试转 UTF-8 字符串会失败，
+    /// 导致所有二进制文件 PUT 请求被误判为 "Bad Request"。
+    /// 现在先通过原始字节找到 headers 边界，仅解析 headers 为 UTF-8，
+    /// body 直接从原始 data 中按 Content-Length 截取。
     static func parse(from data: Data) -> HTTPRequest? {
-        guard let requestString = String(data: data, encoding: .utf8) else { return nil }
+        // 1. 在原始字节中定位 headers/body 边界 \r\n\r\n
+        guard let separatorRange = data.range(of: Data("\r\n\r\n".utf8)) else {
+            return nil
+        }
+        let headerEndIndex = separatorRange.lowerBound
+        let bodyStartIndex = separatorRange.upperBound
         
-        let parts = requestString.components(separatedBy: "\r\n\r\n")
-        guard parts.count >= 1 else { return nil }
-        
-        let headerSection = parts[0]
-        let bodyData: Data
-        if parts.count > 1 {
-            bodyData = parts.dropFirst().joined(separator: "\r\n\r\n").data(using: .utf8) ?? Data()
-        } else {
-            bodyData = Data()
+        // 2. 仅将 headers 部分转为 UTF-8 字符串（headers 始终是 ASCII/UTF-8）
+        let headerData = data.subdata(in: 0..<headerEndIndex)
+        guard let headerString = String(data: headerData, encoding: .utf8) else {
+            return nil
         }
         
-        let lines = headerSection.components(separatedBy: "\r\n")
-        guard let requestLine = lines.first else { return nil }
+        let lines = headerString.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first, !requestLine.isEmpty else {
+            return nil
+        }
         
-        // 解析请求行: METHOD PATH HTTP/1.1
+        // 3. 解析请求行: METHOD PATH HTTP/1.1
         let requestParts = requestLine.components(separatedBy: " ")
         guard requestParts.count >= 2 else { return nil }
         
         let method = requestParts[0].uppercased()
         let rawPath = requestParts.dropFirst().first ?? "/"
         
-        // 分离路径和查询参数，并对 path 做 URL 解码（支持中文目录名）
+        // 4. 分离路径和查询参数，并做 URL 解码（支持中文目录名）
         let pathComponents = rawPath.components(separatedBy: "?")
         let rawPathOnly = pathComponents.first ?? "/"
         let pathWithoutQuery = rawPathOnly.removingPercentEncoding ?? rawPathOnly
@@ -56,30 +62,26 @@ struct HTTPRequest {
             }
         }
         
-        // 解析头部
+        // 5. 解析 headers
         var headers: [String: String] = [:]
         for line in lines.dropFirst() {
-            let separatorIndex = line.firstIndex(of: ":")
-            guard let idx = separatorIndex else { continue }
+            guard let idx = line.firstIndex(of: ":") else { continue }
             let key = String(line[..<idx]).trimmingCharacters(in: .whitespaces)
             let value = String(line[line.index(after: idx)...]).trimmingCharacters(in: .whitespaces)
             headers[key.lowercased()] = value
         }
         
-        // 根据 Content-Length 读取 body 中的实际数据（二进制安全）
-        var actualBody = bodyData
+        // 6. 从原始 data 中按 Content-Length 提取 body（完全二进制安全）
+        var body = Data()
         if let contentLengthStr = headers["content-length"],
            let contentLength = Int(contentLengthStr),
-           contentLength > 0 {
-            // body 在 raw data 中: 找到 \r\n\r\n 分隔符后的二进制数据
-            if let separatorRange = data.range(of: Data("\r\n\r\n".utf8)) {
-                let bodyStartIndex = separatorRange.upperBound
-                if bodyStartIndex < data.count {
-                    let rawBody = data.subdata(in: bodyStartIndex..<min(bodyStartIndex + contentLength, data.count))
-                    if rawBody.count > 0 {
-                        actualBody = rawBody
-                    }
-                }
+           contentLength > 0,
+           bodyStartIndex < data.count {
+            let actualEnd = min(bodyStartIndex + contentLength, data.count)
+            body = data.subdata(in: bodyStartIndex..<actualEnd)
+            
+            if body.count != contentLength {
+                print("[HTTP] Warning: body truncated (expected \(contentLength), got \(body.count))")
             }
         }
         
@@ -89,7 +91,7 @@ struct HTTPRequest {
             pathWithoutQuery: pathWithoutQuery,
             queryParameters: queryParams,
             headers: headers,
-            body: actualBody
+            body: body
         )
     }
 }

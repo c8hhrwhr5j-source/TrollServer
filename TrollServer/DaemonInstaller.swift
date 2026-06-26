@@ -287,10 +287,14 @@ class DaemonInstaller {
     }
     
     /// 单次 launchctl 调用获取完整状态
-    /// launchctl list <label> 的输出格式（iOS 15+ 属性列表格式）：
+    /// launchctl list <label> 的输出格式因 iOS 版本而异：
     ///   - 未找到 : "Could not find specified service"
-    ///   - 已安装但未运行 : { ... "Label" = "com.trollserver.fileserver"; ... }
-    ///   - 正在运行      : { ... "PID" = 12345; ... }
+    ///   - iOS 15+ 属性列表 : { ... "PID" = 12345; ... }
+    ///   - iOS 14 legacy : "PID\tStatus\tLabel" 表头 + 数据行
+    ///   - 旧版 : 可能不包含 "PID" 字样但进程实际在运行
+    ///
+    /// 关键：当 launchctl 无法确认 PID 但端口正在监听时，
+    /// 通过端口检测作为 fallback 判定运行状态，避免误报"自动修复中"。
     static func getStatus() -> DaemonStatus {
         let result = launchTask(bin: "/bin/launchctl", args: ["list", daemonLabel], capture: true)
         let output = result.output ?? ""
@@ -307,13 +311,18 @@ class DaemonInstaller {
         }
         
         // 解析属性列表格式输出，查找 "PID" = <number>;
-        // 格式: \t"PID" = 12345;
+        // 格式 1: \t"PID" = 12345;
+        // 格式 2: "PID" = "12345";
+        // 格式 3: PID = 12345;
+        // 格式 4 (legacy): PID<tab>Status<tab>Label 表格式
         var pid: Int? = nil
         let lines = output.components(separatedBy: .newlines)
+        
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            // 尝试匹配 "PID" = <value> 格式
             if trimmed.hasPrefix("\"PID\"") || trimmed.hasPrefix("PID") {
-                // 解析 "PID" = 12345; 或 PID = 12345;
                 let parts = trimmed.components(separatedBy: "=")
                 if parts.count >= 2 {
                     let valueStr = parts[1]
@@ -323,12 +332,55 @@ class DaemonInstaller {
                         break
                     }
                 }
+                continue
+            }
+            
+            // 尝试匹配 legacy 格式: <PID>\t<Status>\t<Label>
+            // PID 是纯数字开头的行（不包含 "=" 且不是表头）
+            if !trimmed.contains("=") && !trimmed.hasPrefix("\"") && !trimmed.isEmpty {
+                let cols = trimmed.components(separatedBy: .whitespaces)
+                if let firstCol = cols.first, Int(firstCol) != nil, firstCol != "PID" {
+                    // 检查该行是否以纯数字 PID 开头（legacy 格式）
+                    if let pidValue = Int(firstCol), pidValue > 0 {
+                        // 验证这行包含我们的 daemon label
+                        let joined = cols.joined()
+                        if joined.contains(daemonLabel) || cols.last == daemonLabel {
+                            pid = pidValue
+                            break
+                        }
+                    }
+                }
             }
         }
         
-        let running = pid != nil
-        print("[Daemon] status: installed=true, running=\(running), pid=\(pid?.description ?? "nil")")
-        return DaemonStatus(installed: true, running: running, pid: pid)
+        // ============ 核心修复：端口 fallback 检测 ============
+        // 当 launchctl 输出无法解析出 PID，但关键端口正在监听时，
+        // 也能可靠判定守护进程正在运行（避免 UI 误报"自动修复中"）
+        var isRunningViaPorts = false
+        var fallbackPID = pid
+        
+        if pid == nil {
+            let webdavUp = LocalPortChecker.isOpen(51111)
+            let scriptUp = LocalPortChecker.isOpen(8989)
+            
+            if webdavUp && scriptUp {
+                isRunningViaPorts = true
+                // 尝试通过 pgrep 获取 PID
+                let pgrepResult = launchTask(bin: "/usr/bin/pgrep", args: ["-f", "TrollServer"], capture: true)
+                if pgrepResult.exitCode == 0, let pids = pgrepResult.output {
+                    let pidList = pids.components(separatedBy: .newlines)
+                        .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+                        .filter { $0 > 0 }
+                    fallbackPID = pidList.first
+                    print("[Daemon] PID resolved via pgrep: \(fallbackPID?.description ?? "nil")")
+                }
+                print("[Daemon] Ports 51111+8989 both UP → daemon is running (port-based fallback)")
+            }
+        }
+        
+        let running = (pid != nil) || isRunningViaPorts
+        print("[Daemon] status: installed=true, running=\(running), pid=\(fallbackPID?.description ?? "nil")")
+        return DaemonStatus(installed: true, running: running, pid: fallbackPID)
     }
     
     // MARK: - 便捷查询方法（兼容旧接口）
