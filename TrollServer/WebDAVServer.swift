@@ -68,7 +68,7 @@ class WebDAVServer {
         }
         // 后台模式服务等级
         if #available(iOS 14.0, *) {
-            parameters.service = .background
+            parameters.serviceClass = .background
         }
         
         // ===== 安全化 Bonjour 服务名 =====
@@ -85,13 +85,13 @@ class WebDAVServer {
         }
         
         // Bonjour TXT 记录：携带设备 UUID 和版本信息，方便客户端识别
-        let txtDict: [String: Data] = [
-            "uuid": deviceUUID.data(using: .utf8) ?? Data(),
-            "v": "1.0".data(using: .utf8) ?? Data(),
-            "type": "TrollServer".data(using: .utf8) ?? Data(),
-            "port": "\(port)".data(using: .utf8) ?? Data()
+        let txtDict: [String: String] = [
+            "uuid": deviceUUID,
+            "v": "1.0",
+            "type": "TrollServer",
+            "port": "\(port)"
         ]
-        let txtRecord = NWTXTRecord(dictionary: txtDict)
+        let txtRecord = NWTXTRecord(txtDict)
         let service = NWListener.Service(
             name: safeName,
             type: "_http._tcp.",
