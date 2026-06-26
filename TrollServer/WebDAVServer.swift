@@ -55,20 +55,28 @@ class WebDAVServer {
     func start() throws {
         guard !isRunning else { return }
         
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-        parameters.acceptLocalOnly = false
+        let parameters: NWParameters
+        let isDaemon = CommandLine.arguments.contains("--daemon")
         
-        // ===== 加固后台持久化 =====
-        // includePeerToPeer: 允许应用挂起后继续接受局域网连接
-        parameters.includePeerToPeer = true
-        // multipathServiceType: 多路径 TCP 增强连接稳定性
-        if #available(iOS 14.0, *) {
-            parameters.multipathServiceType = .interactive
-        }
-        // 后台模式服务等级
-        if #available(iOS 14.0, *) {
-            parameters.serviceClass = .background
+        if isDaemon {
+            // 守护进程模式：使用保守的 TCP 配置，避免崩溃
+            parameters = .tcp
+            parameters.allowLocalEndpointReuse = true
+            parameters.acceptLocalOnly = false
+            // 仅启用 peer-to-peer，不启用 multipath/background（可能有兼容性问题）
+            parameters.includePeerToPeer = true
+        } else {
+            // 应用模式：启用所有后台增强
+            parameters = .tcp
+            parameters.allowLocalEndpointReuse = true
+            parameters.acceptLocalOnly = false
+            parameters.includePeerToPeer = true
+            if #available(iOS 14.0, *) {
+                parameters.multipathServiceType = .interactive
+            }
+            if #available(iOS 14.0, *) {
+                parameters.serviceClass = .background
+            }
         }
         
         // ===== 安全化 Bonjour 服务名 =====
@@ -156,22 +164,36 @@ class WebDAVServer {
         return Date().timeIntervalSince(serverStartTime)
     }
     
-    // MARK: - 连接处理
+    // MARK: - 连接处理（带防崩溃保护）
     
     private func handleNewConnection(_ connection: NWConnection) {
         connection.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                self?.receiveData(connection)
-            case .failed(let error):
-                print("[WebDAV] Connection failed: \(error)")
-            case .cancelled:
-                break
-            default:
-                break
+            autoreleasepool {
+                switch state {
+                case .ready:
+                    self?.receiveDataSafe(connection)
+                case .failed(let error):
+                    print("[WebDAV] Connection failed: \(error)")
+                case .cancelled:
+                    break
+                default:
+                    break
+                }
             }
         }
         connection.start(queue: .global(qos: .userInitiated))
+    }
+    
+    /// 带崩溃保护的接收循环包装器
+    /// 任何单个连接上的异常都不应导致整个守护进程退出
+    private func receiveDataSafe(_ connection: NWConnection, isKeepAlive: Bool = true) {
+        let ok = TrollServerTryCatch.run {
+            self.receiveData(connection, isKeepAlive: isKeepAlive)
+        }
+        if !ok {
+            print("[WebDAV] ⚠️ Connection handler crashed, closing connection to protect daemon")
+            connection.cancel()
+        }
     }
     
     /// 数据接收循环（修复版）
