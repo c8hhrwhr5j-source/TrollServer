@@ -65,6 +65,7 @@ SWIFT_FILES=(
     "$SRC_DIR/ViewController.swift"
     "$SRC_DIR/DaemonServerRunner.swift"
     "$SRC_DIR/DaemonInstaller.swift"
+    "$SRC_DIR/ServiceWatchdog.swift"
     "$SRC_DIR/WebDAVServer.swift"
     "$SRC_DIR/ScriptControlServer.swift"
     "$SRC_DIR/FileOperations.swift"
