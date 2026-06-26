@@ -170,7 +170,7 @@ class ViewController: UIViewController {
     
     // MARK: - 状态更新 (在后台线程检测守护进程状态，避免卡UI)
     
-    private func updateStatus() {
+    @objc private func updateStatus() {
         let iconRunning = "●"
         let iconStopped = "○"
         
