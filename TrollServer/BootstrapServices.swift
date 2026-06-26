@@ -31,6 +31,9 @@ enum BootstrapServices {
         // 2. 启动自检看门狗
         ServiceMonitor.shared.start(server: httpServer)
 
+        // 3. 启动 UDP 广播发现
+        UDPBroadcaster.shared.start()
+
         print("[Bootstrap] ✅ 守护进程初始化完成")
     }
 
@@ -48,11 +51,15 @@ enum BootstrapServices {
         // 3. 启动自检看门狗
         ServiceMonitor.shared.start(server: httpServer)
 
+        // 4. 启动 UDP 广播发现
+        UDPBroadcaster.shared.start()
+
         print("[Bootstrap] ✅ App 模式初始化完成")
     }
 
     /// 停止所有服务
     static func stopAll() {
+        UDPBroadcaster.shared.stop()
         ServiceMonitor.shared.stop()
         KeepAliveManager.shared.stop()
         httpServer.stop()
