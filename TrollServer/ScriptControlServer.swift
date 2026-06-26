@@ -16,9 +16,9 @@ class ScriptControlServer {
     
     private(set) var isRunning = false
     
-    // 活动连接追踪
+    // 活动连接追踪（NSHashTable 支持对象指针哈希）
     private let connectionsLock = NSLock()
-    private var activeConnections = Set<NWConnection>()
+    private let activeConnections = NSHashTable<NWConnection>.weakObjects()
     
     init(port: UInt16 = 8989, forwardPort: UInt16 = 8899) {
         self.port = port
@@ -129,7 +129,7 @@ class ScriptControlServer {
     
     private func cancelAllConnections() {
         connectionsLock.lock()
-        let conns = activeConnections
+        let conns = activeConnections.allObjects.compactMap { $0 as? NWConnection }
         connectionsLock.unlock()
         for conn in conns {
             conn.cancel()
@@ -140,7 +140,7 @@ class ScriptControlServer {
     
     private func handleConnection(_ clientConn: NWConnection) {
         connectionsLock.lock()
-        activeConnections.insert(clientConn)
+        activeConnections.add(clientConn)
         connectionsLock.unlock()
         
         clientConn.stateUpdateHandler = { [weak self] state in

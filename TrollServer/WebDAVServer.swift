@@ -27,7 +27,8 @@ class WebDAVServer {
     
     // 活动连接追踪（用于 stop 时统一清理，防止连接泄漏）
     private let connectionsLock = NSLock()
-    private var activeConnections = Set<NWConnection>()
+    // NSHashTable 支持对象指针哈希，无需 NWConnection 实现 Hashable
+    private let activeConnections = NSHashTable<NWConnection>.weakObjects()
     
     // Bonjour 服务名
     private let bonjourServiceName: String
@@ -250,7 +251,7 @@ class WebDAVServer {
     private func handleNewConnection(_ connection: NWConnection) {
         // 注册到活动连接集合
         connectionsLock.lock()
-        activeConnections.insert(connection)
+        activeConnections.add(connection)
         connectionsLock.unlock()
         
         connection.stateUpdateHandler = { [weak self] state in
@@ -279,7 +280,7 @@ class WebDAVServer {
     /// 取消所有活动连接（stop 时调用）
     private func cancelAllConnections() {
         connectionsLock.lock()
-        let conns = activeConnections
+        let conns = activeConnections.allObjects.compactMap { $0 as? NWConnection }
         connectionsLock.unlock()
         for conn in conns {
             conn.cancel()
