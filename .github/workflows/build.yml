@@ -48,13 +48,10 @@ jobs:
             "TrollServer/main.swift"
             "TrollServer/AppDelegate.swift"
             "TrollServer/ViewController.swift"
-            "TrollServer/DaemonServerRunner.swift"
-            "TrollServer/DaemonInstaller.swift"
-            "TrollServer/ServiceWatchdog.swift"
-            "TrollServer/WebDAVServer.swift"
-            "TrollServer/ScriptControlServer.swift"
-            "TrollServer/FileOperations.swift"
-            "TrollServer/HTTPRequestParser.swift"
+            "TrollServer/TrollHTTPServer.swift"
+            "TrollServer/KeepAliveManager.swift"
+            "TrollServer/ServiceMonitor.swift"
+            "TrollServer/BootstrapServices.swift"
           )
 
           # 复制 Info.plist
@@ -125,5 +122,5 @@ jobs:
           echo " 下载 IPA 后:"
           echo " 1. 用巨魔(TrollStore)打开 IPA 安装"
           echo " 2. 安装后打开一次 APP"
-          echo " 3. 端口 51111 (WebDAV) 和 8989 (脚本转发) 自动启动"
+          echo " 3. 端口 51111 (HTTP/WebDAV) 自动启动"
           echo "===================================="
