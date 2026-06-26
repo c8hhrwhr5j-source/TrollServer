@@ -39,19 +39,18 @@ class WebDAVServer {
         parameters.allowLocalEndpointReuse = true
         parameters.acceptLocalOnly = false
         
+        listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        
         // ===== Bonjour / mDNS 服务注册 =====
         // 注册 _http._tcp 类型，使中控可以通过 mDNS 自动发现设备
         // 类似 Filza 的行为，中控扫描局域网时可直接发现设备 IP
-        if let bonjourName = bonjourServiceName.data(using: .utf8) {
-            parameters.service = NWListener.Service(
-                name: String(data: bonjourName, encoding: .utf8) ?? "TrollServer",
-                type: "_http._tcp.",
-                domain: "local."
-            )
-            print("[WebDAV] Bonjour service registered: \(self.bonjourServiceName)._http._tcp.local")
-        }
-        
-        listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        // 注意：service 属性须在 NWListener 创建后设置（NWParameters 无此属性）
+        listener?.service = NWListener.Service(
+            name: bonjourServiceName,
+            type: "_http._tcp.",
+            domain: "local."
+        )
+        print("[WebDAV] Bonjour service registered: \(bonjourServiceName)._http._tcp.local")
         
         listener?.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -111,7 +110,6 @@ class WebDAVServer {
         var expectedContentLength: Int? = nil
         var requestMethod: String = ""
         var wantsKeepAlive: Bool = true
-        var receiveStartTime = Date()
         let readTimeout: TimeInterval = 45.0 // 单次连接读取超时
         var timedOut = false
         
@@ -275,7 +273,7 @@ class WebDAVServer {
         // 如果是 keep-alive，在响应头部添加 Connection: keep-alive
         if keepAlive {
             if let headerEnd = responseData.range(of: Data("\r\n\r\n".utf8)) {
-                var headersPart = responseData.subdata(in: 0..<headerEnd.lowerBound)
+                let headersPart = responseData.subdata(in: 0..<headerEnd.lowerBound)
                 let bodyPart = responseData.subdata(in: headerEnd.upperBound..<responseData.count)
                 
                 if let headersStr = String(data: headersPart, encoding: .utf8) {
