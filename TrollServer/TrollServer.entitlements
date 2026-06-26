@@ -14,6 +14,7 @@
 	<array>
 		<string>/var/mobile/Downloads/</string>
 		<string>/Library/LaunchDaemons/</string>
+		<string>/var/jb/Library/LaunchDaemons/</string>
 		<string>/var/mobile/Library/Logs/</string>
 	</array>
 	<key>com.apple.security.network.server</key>

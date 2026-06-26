@@ -166,9 +166,11 @@ class ViewController: UIViewController {
         let iconStopped = "○"
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let daemonInstalled = DaemonInstaller.isInstalled()
-            let daemonRunning = DaemonInstaller.isRunning()
-            let daemonPID = DaemonInstaller.getPID()
+            // 单次调用获取完整守护进程状态（避免多次 launchctl 调用）
+            let daemonStatus = DaemonInstaller.getStatus()
+            let daemonInstalled = daemonStatus.installed
+            let daemonRunning = daemonStatus.running
+            let daemonPID = daemonStatus.pid
             
             DispatchQueue.main.async {
                 guard let self = self else { return }
