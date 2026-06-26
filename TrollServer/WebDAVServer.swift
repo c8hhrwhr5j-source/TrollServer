@@ -52,32 +52,53 @@ class WebDAVServer {
     
     // MARK: - 启动/停止
     
+    // 用于同步 start/stop 操作的串行队列（防止竞态条件）
+    private let lifecycleQueue = DispatchQueue(label: "com.trollserver.webdav.lifecycle")
+    private var isStopping = false
+    
     func start() throws {
-        guard !isRunning else { return }
-        
-        let parameters: NWParameters
-        let isDaemon = CommandLine.arguments.contains("--daemon")
-        
-        if isDaemon {
-            // 守护进程模式：使用保守的 TCP 配置，避免崩溃
-            parameters = .tcp
-            parameters.allowLocalEndpointReuse = true
-            parameters.acceptLocalOnly = false
-            // 仅启用 peer-to-peer，不启用 multipath/background（可能有兼容性问题）
-            parameters.includePeerToPeer = true
-        } else {
-            // 应用模式：启用所有后台增强
-            parameters = .tcp
-            parameters.allowLocalEndpointReuse = true
-            parameters.acceptLocalOnly = false
-            parameters.includePeerToPeer = true
-            if #available(iOS 14.0, *) {
-                parameters.multipathServiceType = .interactive
+        try lifecycleQueue.sync {
+            // 防止在停止过程中启动
+            guard !isStopping else {
+                print("[WebDAV:\(port)] Cannot start: server is stopping")
+                return
             }
-            if #available(iOS 14.0, *) {
-                parameters.serviceClass = .background
+            guard !isRunning else { return }
+            
+            // 确保旧 listener 已完全释放
+            guard listener == nil else {
+                print("[WebDAV:\(port)] Listener already exists, not starting")
+                return
             }
+            
+            let parameters: NWParameters
+            
+            if isDaemonMode {
+                // 守护进程模式：使用保守的 TCP 配置
+                parameters = .tcp
+                parameters.allowLocalEndpointReuse = true
+                parameters.acceptLocalOnly = false
+                parameters.includePeerToPeer = true
+            } else {
+                // 应用模式：启用后台增强
+                parameters = .tcp
+                parameters.allowLocalEndpointReuse = true
+                parameters.acceptLocalOnly = false
+                parameters.includePeerToPeer = true
+                if #available(iOS 14.0, *) {
+                    parameters.multipathServiceType = .interactive
+                }
+                if #available(iOS 14.0, *) {
+                    parameters.serviceClass = .background
+                }
+            }
+            
+            try _doStart(parameters: parameters)
         }
+    }
+    
+    /// 在 lifecycleQueue 内执行的实际启动
+    private func _doStart(parameters: NWParameters) throws {
         
         // ===== 安全化 Bonjour 服务名 =====
         // iOS 设备名可能含中文/表情/特殊字符，需清理为合法 DNS 名
@@ -136,16 +157,80 @@ class WebDAVServer {
     }
     
     func stop() {
-        listener?.cancel()
-        listener = nil
-        isRunning = false
+        lifecycleQueue.async { [weak self] in
+            guard let self = self, !self.isStopping else { return }
+            self.isStopping = true
+            
+            if let l = self.listener {
+                let sem = DispatchSemaphore(value: 0)
+                var cancelDone = false
+                l.stateUpdateHandler = { state in
+                    if case .cancelled = state {
+                        cancelDone = true
+                        sem.signal()
+                    }
+                }
+                l.cancel()
+                // 等待 cancel 完成，最多等 3 秒
+                let timeout: DispatchTime = .now() + 3.0
+                lifecycleQueue.asyncAfter(deadline: timeout) {
+                    if !cancelDone { sem.signal() }
+                }
+                sem.wait()
+                self.listener = nil
+                print("[WebDAV:\(self.port)] Server fully stopped")
+            }
+            
+            self.isRunning = false
+            self.isStopping = false
+        }
     }
     
-    // MARK: - 电池轮询（仅前台/应用模式）
+    /// 同步停止（调用方会等待 stop 完成，最多 3 秒）
+    func stopSync() {
+        let sem = DispatchSemaphore(value: 0)
+        stopWithCompletion { sem.signal() }
+        _ = sem.wait(timeout: .now() + 5.0)
+    }
+    
+    /// 带完成回调的停止
+    func stopWithCompletion(_ completion: @escaping () -> Void) {
+        lifecycleQueue.async { [weak self] in
+            defer { completion() }
+            guard let self = self, !self.isStopping else { return }
+            self.isStopping = true
+            
+            if let l = self.listener {
+                let sem = DispatchSemaphore(value: 0)
+                var cancelDone = false
+                l.stateUpdateHandler = { state in
+                    if case .cancelled = state {
+                        cancelDone = true
+                        sem.signal()
+                    }
+                }
+                l.cancel()
+                _ = sem.wait(timeout: .now() + 3.0)
+                if !cancelDone {
+                    print("[WebDAV:\(self.port)] ⚠️ Stop timeout, forcing nil")
+                }
+                self.listener = nil
+                print("[WebDAV:\(self.port)] Server fully stopped")
+            }
+            
+            self.isRunning = false
+            self.isStopping = false
+        }
+    }
+    
+    // MARK: - 电池轮询（仅应用模式，守护进程模式跳过）
+    
+    private let isDaemonMode: Bool = CommandLine.arguments.contains("--daemon")
     
     private func startBatteryPollingIfNeeded() {
+        // ⚠️ 守护进程模式没有 UIApplication，不能调用 UIApplication.shared（会 crash）
+        guard !isDaemonMode else { return }
         guard UIApplication.shared.applicationState != .background else { return }
-        // 在需要时读取电池状态即可，不创建独立 timer
         _ = refreshBatteryLevel()
     }
     

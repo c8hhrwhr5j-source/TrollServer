@@ -46,8 +46,11 @@ class ServiceWatchdog {
     private var timer: DispatchSourceTimer?
     private var isHealing = false
     private var lastHealTime: Date = .distantPast
-    private let healCooldown: TimeInterval = 8
-    private let checkInterval: TimeInterval = 12
+    private let healCooldown: TimeInterval = 30      // 自愈冷却：30 秒内最多触发一次
+    private let checkInterval: TimeInterval = 20       // 检测间隔：20 秒
+    private let restartCooldown: TimeInterval = 10     // 单服务重启冷却：10 秒内不重复重启
+    private var lastWebDAVHeal: Date = .distantPast
+    private var lastScriptHeal: Date = .distantPast
     
     private weak var serverRunner: DaemonServerRunner?
     private var isDaemonMode = false
@@ -220,10 +223,17 @@ class ServiceWatchdog {
         lastHealTime = Date()
         print("[Watchdog] Daemon self-heal: webdav=\(webdavUp) script=\(scriptUp)")
         
-        if !webdavUp {
+        let now = Date()
+        if !webdavUp && runner.isRestartingWebDAV == false &&
+            now.timeIntervalSince(lastWebDAVHeal) > restartCooldown {
+            lastWebDAVHeal = now
+            print("[Watchdog] Triggering WebDAV restart...")
             runner.restartWebDAVDaemon()
         }
-        if !scriptUp {
+        if !scriptUp && runner.isRestartingScript == false &&
+            now.timeIntervalSince(lastScriptHeal) > restartCooldown {
+            lastScriptHeal = now
+            print("[Watchdog] Triggering Script restart...")
             runner.restartScriptDaemon()
         }
     }

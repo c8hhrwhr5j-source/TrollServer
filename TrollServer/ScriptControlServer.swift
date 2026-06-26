@@ -23,40 +23,93 @@ class ScriptControlServer {
     
     // MARK: - 启动
     
+    private let lifecycleQueue = DispatchQueue(label: "com.trollserver.script.lifecycle")
+    private var isStopping = false
+    
     func start() throws {
-        guard !isRunning else { return }
-        
-        let parameters = NWParameters.tcp
-        parameters.allowLocalEndpointReuse = true
-        
-        listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
-        
-        listener?.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                print("[ScriptCtrl:\(self?.port ?? 0)] Server ready (forwarding to :\(self?.forwardPort ?? 0))")
-                self?.isRunning = true
-            case .failed(let error):
-                print("[ScriptCtrl:\(self?.port ?? 0)] Failed: \(error)")
-                self?.isRunning = false
-            case .cancelled:
-                self?.isRunning = false
-            default:
-                break
+        try lifecycleQueue.sync {
+            guard !isStopping else {
+                print("[ScriptCtrl:\(port)] Cannot start: server is stopping")
+                return
             }
+            guard !isRunning else { return }
+            guard listener == nil else {
+                print("[ScriptCtrl:\(port)] Listener already exists, not starting")
+                return
+            }
+            
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            
+            listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+            
+            listener?.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .ready:
+                    print("[ScriptCtrl:\(self?.port ?? 0)] Server ready (forwarding to :\(self?.forwardPort ?? 0))")
+                    self?.isRunning = true
+                case .failed(let error):
+                    print("[ScriptCtrl:\(self?.port ?? 0)] Failed: \(error)")
+                    self?.isRunning = false
+                case .cancelled:
+                    self?.isRunning = false
+                default:
+                    break
+                }
+            }
+            
+            listener?.newConnectionHandler = { [weak self] connection in
+                self?.handleConnection(connection)
+            }
+            
+            listener?.start(queue: .global(qos: .userInitiated))
         }
-        
-        listener?.newConnectionHandler = { [weak self] connection in
-            self?.handleConnection(connection)
-        }
-        
-        listener?.start(queue: .global(qos: .userInitiated))
     }
     
     func stop() {
-        listener?.cancel()
-        listener = nil
-        isRunning = false
+        lifecycleQueue.async { [weak self] in
+            guard let self = self, !self.isStopping else { return }
+            self.isStopping = true
+            
+            if let l = self.listener {
+                let sem = DispatchSemaphore(value: 0)
+                l.stateUpdateHandler = { state in
+                    if case .cancelled = state { sem.signal() }
+                }
+                l.cancel()
+                _ = sem.wait(timeout: .now() + 3.0)
+                self.listener = nil
+                print("[ScriptCtrl:\(self.port)] Server fully stopped")
+            }
+            
+            self.isRunning = false
+            self.isStopping = false
+        }
+    }
+    
+    /// 同步停止（调用方等待，最多 3 秒）
+    func stopSync() {
+        let sem = DispatchSemaphore(value: 0)
+        lifecycleQueue.async { [weak self] in
+            defer { sem.signal() }
+            guard let self = self, !self.isStopping else { return }
+            self.isStopping = true
+            
+            if let l = self.listener {
+                let canceledSem = DispatchSemaphore(value: 0)
+                l.stateUpdateHandler = { state in
+                    if case .cancelled = state { canceledSem.signal() }
+                }
+                l.cancel()
+                _ = canceledSem.wait(timeout: .now() + 3.0)
+                self.listener = nil
+                print("[ScriptCtrl:\(self.port)] Server fully stopped (sync)")
+            }
+            
+            self.isRunning = false
+            self.isStopping = false
+        }
+        _ = sem.wait(timeout: .now() + 5.0)
     }
     
     // MARK: - 连接处理：转发到本地脚本 APP

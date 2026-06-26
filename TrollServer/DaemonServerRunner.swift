@@ -39,26 +39,37 @@ class DaemonServerRunner: NSObject {
     }
     
     /// 守护进程模式重启 WebDAV（给 Watchdog 调用）
+    /// 使用同步停止确保旧 listener 完全释放后再启动新 listener
     func restartWebDAVDaemon() {
-        webdavServer?.stop()
+        isRestartingWebDAV = true
+        webdavServer?.stopSync()
+        // 短暂延迟确保端口完全释放
+        Thread.sleep(forTimeInterval: 0.5)
         do {
             try startWebDAVDaemon()
             print("[TrollServer] WebDAV daemon restarted OK")
         } catch {
             print("[TrollServer] ERROR: WebDAV daemon restart failed: \(error)")
         }
+        isRestartingWebDAV = false
     }
     
     /// 守护进程模式重启 ScriptControl（给 Watchdog 调用）
     func restartScriptDaemon() {
-        scriptServer?.stop()
+        isRestartingScript = true
+        scriptServer?.stopSync()
+        Thread.sleep(forTimeInterval: 0.5)
         do {
             try startScriptControlDaemon()
             print("[TrollServer] Script daemon restarted OK")
         } catch {
             print("[TrollServer] ERROR: Script daemon restart failed: \(error)")
         }
+        isRestartingScript = false
     }
+    
+    private(set) var isRestartingWebDAV = false
+    private(set) var isRestartingScript = false
     
     // MARK: - Daemon 模式启动（不重试，交给 Watchdog 周期修复）
     
@@ -77,8 +88,8 @@ class DaemonServerRunner: NSObject {
     
     /// 停止所有服务
     func stop() {
-        webdavServer?.stop()
-        scriptServer?.stop()
+        webdavServer?.stopSync()
+        scriptServer?.stopSync()
         print("[TrollServer] All servers stopped")
     }
     

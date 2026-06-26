@@ -168,6 +168,11 @@ class ViewController: UIViewController {
         }
     }
     
+    // MARK: - 状态防抖动（防止"运行中"↔"自动修复中"快速切换）
+    
+    private var lastRunningTime: Date = .distantPast
+    private let statusDebounceDuration: TimeInterval = 5.0  // 服务中断 5 秒内仍显示"运行中"
+    
     // MARK: - 状态更新 (在后台线程检测守护进程状态，避免卡UI)
     
     @objc private func updateStatus() {
@@ -185,14 +190,27 @@ class ViewController: UIViewController {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 
+                let now = Date()
+                
                 // 端口通了就算"运行中"，不管 launchctl 返回什么
                 let serviceActuallyUp = port51111Up && port8989Up
                 let daemonEffectiveRunning = daemonRunning || serviceActuallyUp
                 
-                let daemonIcon = daemonEffectiveRunning ? iconRunning : iconStopped
+                // 记录最近一次"运行中"的时间
+                if daemonEffectiveRunning {
+                    self.lastRunningTime = now
+                }
+                
+                // 防抖动：如果最近 5 秒内服务还在运行，保持"运行中"
+                let inDebounceWindow = !daemonEffectiveRunning && now.timeIntervalSince(self.lastRunningTime) < self.statusDebounceDuration
+                let displayAsRunning = daemonEffectiveRunning || inDebounceWindow
+                
+                let daemonIcon = displayAsRunning ? iconRunning : iconStopped
                 let daemonColor: String
                 if daemonEffectiveRunning {
                     daemonColor = "运行中"
+                } else if inDebounceWindow {
+                    daemonColor = "运行中（检测中…）"
                 } else if daemonInstalled {
                     daemonColor = "自动修复中…"
                 } else {
@@ -201,7 +219,7 @@ class ViewController: UIViewController {
                 
                 self.daemonStatusLabel.attributedText = self.buildStatusLine(
                     icon: daemonIcon, title: "守护进程", detail: "\(daemonColor) \(daemonPID.map { "(PID: \($0))" } ?? "")",
-                    ok: daemonEffectiveRunning
+                    ok: displayAsRunning
                 )
                 
                 // WebDAV 状态（端口监听或守护进程托管即视为运行中）
