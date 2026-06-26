@@ -221,14 +221,10 @@ class ServiceWatchdog {
         print("[Watchdog] Daemon self-heal: webdav=\(webdavUp) script=\(scriptUp)")
         
         if !webdavUp {
-            runner.webdavServer?.stop()
-            try? runner.webdavServer?.start()
-            print("[Watchdog] Restarted WebDAV")
+            runner.restartWebDAVDaemon()
         }
         if !scriptUp {
-            runner.scriptServer?.stop()
-            try? runner.scriptServer?.start()
-            print("[Watchdog] Restarted ScriptControl")
+            runner.restartScriptDaemon()
         }
     }
     

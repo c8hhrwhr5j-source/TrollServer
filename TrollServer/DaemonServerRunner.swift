@@ -10,11 +10,69 @@ class DaemonServerRunner: NSObject {
     var webdavServer: WebDAVServer?
     var scriptServer: ScriptControlServer?
     
-    /// 启动所有服务
+    /// 启动所有服务（应用模式使用）
     func start() {
         startWebDAVServer()
         startScriptControlServer()
         print("[TrollServer] All servers started")
+    }
+    
+    /// 守护进程模式启动 — 每个服务独立 try/catch，启动失败不退出进程
+    func startDaemon() {
+        print("[TrollServer] Daemon runner starting (PID=\(getpid()))...")
+        
+        // WebDAV
+        do {
+            try startWebDAVDaemon()
+        } catch {
+            print("[TrollServer] ERROR: WebDAV daemon start failed: \(error)")
+        }
+        
+        // ScriptControl
+        do {
+            try startScriptControlDaemon()
+        } catch {
+            print("[TrollServer] ERROR: ScriptControl daemon start failed: \(error)")
+        }
+        
+        print("[TrollServer] Daemon runner init done (webdav=\(webdavServer?.getStats().running ?? false), script=\(scriptServer?.getStatus().running ?? false))")
+    }
+    
+    /// 守护进程模式重启 WebDAV（给 Watchdog 调用）
+    func restartWebDAVDaemon() {
+        webdavServer?.stop()
+        do {
+            try startWebDAVDaemon()
+            print("[TrollServer] WebDAV daemon restarted OK")
+        } catch {
+            print("[TrollServer] ERROR: WebDAV daemon restart failed: \(error)")
+        }
+    }
+    
+    /// 守护进程模式重启 ScriptControl（给 Watchdog 调用）
+    func restartScriptDaemon() {
+        scriptServer?.stop()
+        do {
+            try startScriptControlDaemon()
+            print("[TrollServer] Script daemon restarted OK")
+        } catch {
+            print("[TrollServer] ERROR: Script daemon restart failed: \(error)")
+        }
+    }
+    
+    // MARK: - Daemon 模式启动（不重试，交给 Watchdog 周期修复）
+    
+    private func startWebDAVDaemon() throws {
+        let baseDir = "/var/mobile/Downloads"
+        webdavServer = WebDAVServer(port: 51111, baseDirectory: baseDir)
+        try webdavServer?.start()
+        print("[TrollServer] WebDAV daemon started on port 51111")
+    }
+    
+    private func startScriptControlDaemon() throws {
+        scriptServer = ScriptControlServer(port: 8989)
+        try scriptServer?.start()
+        print("[TrollServer] Script control daemon started on port 8989")
     }
     
     /// 停止所有服务

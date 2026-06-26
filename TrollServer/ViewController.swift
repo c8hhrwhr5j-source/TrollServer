@@ -185,11 +185,23 @@ class ViewController: UIViewController {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 
-                let daemonIcon = daemonRunning ? iconRunning : iconStopped
-                let daemonColor = daemonRunning ? "运行中" : (daemonInstalled ? "自动修复中…" : "自动安装中…")
+                // 端口通了就算"运行中"，不管 launchctl 返回什么
+                let serviceActuallyUp = port51111Up && port8989Up
+                let daemonEffectiveRunning = daemonRunning || serviceActuallyUp
+                
+                let daemonIcon = daemonEffectiveRunning ? iconRunning : iconStopped
+                let daemonColor: String
+                if daemonEffectiveRunning {
+                    daemonColor = "运行中"
+                } else if daemonInstalled {
+                    daemonColor = "自动修复中…"
+                } else {
+                    daemonColor = "自动安装中…"
+                }
+                
                 self.daemonStatusLabel.attributedText = self.buildStatusLine(
                     icon: daemonIcon, title: "守护进程", detail: "\(daemonColor) \(daemonPID.map { "(PID: \($0))" } ?? "")",
-                    ok: daemonRunning
+                    ok: daemonEffectiveRunning
                 )
                 
                 // WebDAV 状态（端口监听或守护进程托管即视为运行中）
