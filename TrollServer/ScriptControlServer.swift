@@ -107,7 +107,7 @@ class ScriptControlServer {
                             }
                         }
                         // 无 body 请求方法直接视为 body 长度为 0
-                        if var firstLine = headerStr.components(separatedBy: "\r\n").first {
+                        if let firstLine = headerStr.components(separatedBy: "\r\n").first {
                             let method = firstLine.components(separatedBy: " ").first ?? ""
                             if method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "DELETE" {
                                 expectedContentLength = 0

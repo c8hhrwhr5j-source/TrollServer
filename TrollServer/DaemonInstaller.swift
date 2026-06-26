@@ -13,20 +13,19 @@ private func launchTask(bin: String, args: [String], capture: Bool = false) -> (
     defer { argv.forEach { free($0) } }
     
     var pid: pid_t = 0
-    var childAttrs: posix_spawnattr_t? = nil
+    var childAttrs: posix_spawnattr_t = posix_spawnattr_t()
     posix_spawnattr_init(&childAttrs)
-    defer { if childAttrs != nil { posix_spawnattr_destroy(&childAttrs) } }
+    defer { posix_spawnattr_destroy(&childAttrs) }
     
     if capture {
         var pipeFD: [Int32] = [0, 0]
         guard pipe(&pipeFD) == 0 else {
             return (-1, nil)
         }
-        // 不再用 defer 关闭 pipeFD，改为在分支中精确关闭，避免 double-close
         
-        var fileActions: posix_spawn_file_actions_t? = nil
+        var fileActions: posix_spawn_file_actions_t = posix_spawn_file_actions_t()
         posix_spawn_file_actions_init(&fileActions)
-        defer { if fileActions != nil { posix_spawn_file_actions_destroy(&fileActions) } }
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
         
         posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
         posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
@@ -35,10 +34,10 @@ private func launchTask(bin: String, args: [String], capture: Bool = false) -> (
         
         let spawnResult = posix_spawn(&pid, bin, &fileActions, &childAttrs,
                                       argv, environ)
-        close(pipeFD[1])  // 关闭写端，让子进程可以退出
+        close(pipeFD[1])
         
         if spawnResult != 0 {
-            close(pipeFD[0])  // 关闭读端
+            close(pipeFD[0])
             return (-1, nil)
         }
         
@@ -49,7 +48,7 @@ private func launchTask(bin: String, args: [String], capture: Bool = false) -> (
             if n <= 0 { break }
             outData.append(contentsOf: buf[0..<n])
         }
-        close(pipeFD[0])  // 读完后关闭读端
+        close(pipeFD[0])
         
         let output = String(data: outData, encoding: .utf8)
         var st: Int32 = 0
