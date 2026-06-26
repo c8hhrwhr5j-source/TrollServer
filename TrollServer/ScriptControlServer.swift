@@ -75,57 +75,111 @@ class ScriptControlServer {
         clientConn.start(queue: .global(qos: .userInitiated))
     }
     
-    /// 从客户端接收 HTTP 请求，原样转发到 localhost:8899 的脚本 APP
+    /// 从客户端接收完整 HTTP 请求，原样转发到 localhost:8899 的脚本 APP
+    /// 循环接收直到请求完整，避免 POST body 或分片 header 被截断
     private func forwardToScriptApp(_ clientConn: NWConnection) {
-        clientConn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
-            guard let self = self, let data = data, !data.isEmpty, error == nil else {
-                clientConn.cancel()
-                return
-            }
-            
-            // 建立到本地脚本 APP 的连接
-            let scriptHost = NWEndpoint.Host(self.forwardHost)
-            let scriptPort = NWEndpoint.Port(integerLiteral: self.forwardPort)
-            
-            let scriptConn = NWConnection(
-                host: scriptHost,
-                port: scriptPort,
-                using: .tcp
-            )
-            
-            scriptConn.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    // 转发请求到脚本 APP
-                    scriptConn.send(content: data, completion: .contentProcessed({ _ in
-                        // 接收脚本 APP 的响应并转发回客户端
-                        scriptConn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { respData, _, _, _ in
-                            if let resp = respData {
-                                clientConn.send(content: resp, completion: .contentProcessed({ _ in
-                                    clientConn.cancel()
-                                }))
-                            } else {
-                                clientConn.cancel()
-                            }
-                            scriptConn.cancel()
-                        }
-                    }))
-                case .failed:
-                    // 脚本 APP 未运行，返回 503
-                    let errorResp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 28\r\n\r\nScript app not running on :8899"
-                    clientConn.send(content: errorResp.data(using: .utf8)!, completion: .contentProcessed({ _ in
-                        clientConn.cancel()
-                    }))
-                    scriptConn.cancel()
-                case .cancelled:
+        var accumulatedData = Data()
+        var expectedContentLength: Int? = nil
+        
+        func readNext() {
+            clientConn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+                guard let self = self else { clientConn.cancel(); return }
+                
+                if error != nil {
                     clientConn.cancel()
-                default:
-                    break
+                    return
+                }
+                
+                if let data = data {
+                    accumulatedData.append(data)
+                }
+                
+                // 首次读取时解析 Content-Length
+                if expectedContentLength == nil,
+                   let headerEnd = accumulatedData.range(of: Data("\r\n\r\n".utf8)) {
+                    let headerData = accumulatedData.subdata(in: 0..<headerEnd.lowerBound)
+                    if let headerStr = String(data: headerData, encoding: .utf8) {
+                        for line in headerStr.components(separatedBy: "\r\n") {
+                            let lower = line.lowercased()
+                            if lower.hasPrefix("content-length:") {
+                                let val = line.components(separatedBy: ":").dropFirst().joined().trimmingCharacters(in: .whitespaces)
+                                expectedContentLength = Int(val)
+                            }
+                        }
+                        // 无 body 请求方法直接视为 body 长度为 0
+                        if var firstLine = headerStr.components(separatedBy: "\r\n").first {
+                            let method = firstLine.components(separatedBy: " ").first ?? ""
+                            if method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "DELETE" {
+                                expectedContentLength = 0
+                            }
+                        }
+                    }
+                }
+                
+                // 判断请求是否接收完整
+                let headerEnd = accumulatedData.range(of: Data("\r\n\r\n".utf8))
+                let headerSize = headerEnd?.upperBound ?? 0
+                let headerComplete = headerSize > 0
+                let expectedBody = expectedContentLength ?? 0
+                let receivedBody = accumulatedData.count - headerSize
+                let bodyComplete = (expectedContentLength != nil && receivedBody >= expectedBody)
+                let requestComplete = headerComplete && (isComplete || bodyComplete)
+                
+                if requestComplete {
+                    self.doForward(clientConn, data: accumulatedData)
+                } else {
+                    readNext()
                 }
             }
-            
-            scriptConn.start(queue: .global())
         }
+        
+        readNext()
+    }
+    
+    /// 将完整请求数据转发到本地脚本 APP
+    private func doForward(_ clientConn: NWConnection, data: Data) {
+        // 建立到本地脚本 APP 的连接
+        let scriptHost = NWEndpoint.Host(self.forwardHost)
+        let scriptPort = NWEndpoint.Port(integerLiteral: self.forwardPort)
+        
+        let scriptConn = NWConnection(
+            host: scriptHost,
+            port: scriptPort,
+            using: .tcp
+        )
+        
+        scriptConn.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                // 转发完整请求到脚本 APP
+                scriptConn.send(content: data, completion: .contentProcessed({ _ in
+                    // 接收脚本 APP 的响应并转发回客户端
+                    scriptConn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { respData, _, _, _ in
+                        if let resp = respData {
+                            clientConn.send(content: resp, completion: .contentProcessed({ _ in
+                                clientConn.cancel()
+                            }))
+                        } else {
+                            clientConn.cancel()
+                        }
+                        scriptConn.cancel()
+                    }
+                }))
+            case .failed:
+                // 脚本 APP 未运行，返回 503
+                let errorResp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 28\r\n\r\nScript app not running on :8899"
+                clientConn.send(content: errorResp.data(using: .utf8)!, completion: .contentProcessed({ _ in
+                    clientConn.cancel()
+                }))
+                scriptConn.cancel()
+            case .cancelled:
+                clientConn.cancel()
+            default:
+                break
+            }
+        }
+        
+        scriptConn.start(queue: .global())
     }
     
     func getStatus() -> (port: UInt16, forwardTo: String, running: Bool) {

@@ -234,7 +234,7 @@ class ViewController: UIViewController {
     
     @objc private func restartWebDAV() {
         serverRunner.webdavServer?.stop()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [weak self] in
             try? self?.serverRunner.webdavServer?.start()
             DispatchQueue.main.async { self?.updateStatus() }
         }

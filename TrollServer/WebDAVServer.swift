@@ -126,11 +126,18 @@ class WebDAVServer {
                 }
                 
                 // 判断是否接收完毕
-                let headerSize = accumulatedData.range(of: Data("\r\n\r\n".utf8))?.upperBound ?? 0
+                let headerEnd = accumulatedData.range(of: Data("\r\n\r\n".utf8))
+                let headerSize = headerEnd?.upperBound ?? 0
+                let headerComplete = headerSize > 0
                 let expectedBody = expectedContentLength ?? 0
                 let receivedBody = accumulatedData.count - headerSize
                 
-                if isComplete || (expectedContentLength != nil && receivedBody >= expectedBody) {
+                // isComplete 可能为 true 但 header 尚未完整接收，
+                // 必须 header 完整且 body 收齐才认为请求完成
+                let bodyComplete = (expectedContentLength != nil && receivedBody >= expectedBody)
+                let requestComplete = headerComplete && (isComplete || bodyComplete)
+                
+                if requestComplete {
                     // 完整接收，解析并处理请求
                     guard let request = HTTPRequest.parse(from: accumulatedData) else {
                         let resp = HTTPResponse.internalServerError("Bad Request")

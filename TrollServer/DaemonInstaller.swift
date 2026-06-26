@@ -155,7 +155,23 @@ class DaemonInstaller {
     static func isRunning() -> Bool {
         let result = launchTask(bin: "/bin/launchctl", args: ["list", daemonLabel], capture: true)
         let output = result.output ?? ""
-        return output.contains("\"PID\"") || !output.contains("Could not find")
+        // launchctl list 如果找到服务会输出包含 PID 的行，格式如: "PID\tStatus\tLabel"
+        // 如果找不到服务则输出 "Could not find specified service"
+        if output.contains("Could not find") {
+            return false
+        }
+        // 检查第一列是否为有效数字 PID（排除错误消息中含 "PID" 字符串的误判）
+        let lines = output.components(separatedBy: .newlines)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty && !trimmed.hasPrefix("Could not find") {
+                let firstColumn = trimmed.components(separatedBy: "\t").first?.trimmingCharacters(in: .whitespaces) ?? ""
+                if let _ = Int(firstColumn) {
+                    return true
+                }
+            }
+        }
+        return false
     }
     
     /// 获取守护进程 PID
