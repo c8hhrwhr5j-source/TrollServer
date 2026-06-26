@@ -116,7 +116,9 @@ class WebDAVServer {
                         // 避免 HTTP/1.1 keep-alive 下无限等待
                         if var firstLine = headerStr.components(separatedBy: "\r\n").first {
                             let method = firstLine.components(separatedBy: " ").first ?? ""
-                            if method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "DELETE" {
+                            // GET/HEAD/OPTIONS/DELETE 标准无 body
+                            // MKCOL/PROPFIND WebDAV 方法通常也无 body 或 body 很小
+                            if method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "DELETE" || method == "MKCOL" || method == "PROPFIND" {
                                 expectedContentLength = 0
                             }
                         }
