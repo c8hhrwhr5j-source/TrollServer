@@ -104,11 +104,20 @@ class WebDAVServer {
                    let headerEnd = accumulatedData.range(of: Data("\r\n\r\n".utf8)) {
                     let headerData = accumulatedData.subdata(in: 0..<headerEnd.lowerBound)
                     if let headerStr = String(data: headerData, encoding: .utf8) {
+                        // 解析 Content-Length
                         for line in headerStr.components(separatedBy: "\r\n") {
                             let lower = line.lowercased()
                             if lower.hasPrefix("content-length:") {
                                 let val = line.components(separatedBy: ":").dropFirst().joined().trimmingCharacters(in: .whitespaces)
                                 expectedContentLength = Int(val)
+                            }
+                        }
+                        // 对于无 body 的请求方法，请求在 header 结束后即完成
+                        // 避免 HTTP/1.1 keep-alive 下无限等待
+                        if var firstLine = headerStr.components(separatedBy: "\r\n").first {
+                            let method = firstLine.components(separatedBy: " ").first ?? ""
+                            if method == "GET" || method == "HEAD" || method == "OPTIONS" || method == "DELETE" {
+                                expectedContentLength = 0
                             }
                         }
                     }
