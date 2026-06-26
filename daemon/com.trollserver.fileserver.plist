@@ -11,8 +11,13 @@
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
-	<key>KeepAlive</key>
+	<key>StartOnMount</key>
 	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
 	<key>EnableTransactions</key>
 	<false/>
 	<key>EnvironmentVariables</key>
