@@ -84,71 +84,117 @@ if [ "$BUILD_TARGET" = "daemon" ]; then
     echo "[2/3] 准备 LaunchDaemon plist..."
     cp "$PROJECT_DIR/com.trollserver.daemon.plist" "$BUILD_DIR/com.trollserver.daemon.plist"
 
-    echo "[3/3] 生成安装脚本..."
-    cat > "$BUILD_DIR/install-daemon.sh" << 'INSTALL_SCRIPT'
+    echo "[3/3] 生成自包含安装脚本..."
+
+    # 把二进制 + plist 用 base64 编码塞进脚本里，一个文件搞定
+    B64_BIN=$(base64 "$OUTPUT_DAEMON" | tr -d '\n')
+    B64_PLIST=$(base64 "$PROJECT_DIR/com.trollserver.daemon.plist" | tr -d '\n')
+
+    cat > "$BUILD_DIR/trollserverd-install.sh" << INSTALL_SCRIPT
 #!/bin/bash
-# TrollServer Daemon 安装脚本
-# 用 TrollStore 安装后，SSH 到设备执行此脚本：
-#   chmod +x install-daemon.sh && ./install-daemon.sh
+# ===================================================
+#  TrollServer Daemon — 自包含安装脚本
+#  一个文件搞定，传到手机上直接跑！
+#
+#  用法:
+#    chmod +x trollserverd-install.sh
+#    ./trollserverd-install.sh
+# ===================================================
 set -e
 
 DAEMON_PATH="/usr/local/bin/trollserverd"
 PLIST_PATH="/Library/LaunchDaemons/com.trollserver.daemon.plist"
+LOG_DIR="/var/mobile/Library/Logs"
+TMP="/tmp/.trollserver_install"
 
-echo "=== TrollServer Daemon 安装 ==="
+echo "=== TrollServer Daemon 一键安装 ==="
+echo ""
 
-# 1. 停止旧服务
-if launchctl list | grep -q com.trollserver.daemon; then
-    echo "[1/4] 停止旧 daemon..."
-    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+# 1. 检查权限（必须以 root 运行）
+if [ "\$(id -u)" != "0" ]; then
+    echo "❌ 请以 root 身份运行此脚本"
+    echo "   sudo bash \$0"
+    exit 1
 fi
 
-# 2. 复制二进制
-echo "[2/4] 安装二进制到 $DAEMON_PATH..."
-mkdir -p /usr/local/bin
-cp "$(dirname "$0")/TrollServerd" "$DAEMON_PATH"
-chmod 755 "$DAEMON_PATH"
-chown root:wheel "$DAEMON_PATH"
+# 2. 停止旧服务
+if launchctl list 2>/dev/null | grep -q com.trollserver.daemon; then
+    echo "[1/6] 停止旧 daemon..."
+    launchctl unload "\$PLIST_PATH" 2>/dev/null || true
+    sleep 1
+else
+    echo "[1/6] 无旧 daemon 运行，跳过"
+fi
 
-# 3. 安装 LaunchDaemon plist
-echo "[3/4] 安装 LaunchDaemon plist..."
-cp "$(dirname "$0")/com.trollserver.daemon.plist" "$PLIST_PATH"
-chmod 644 "$PLIST_PATH"
-chown root:wheel "$PLIST_PATH"
+# 3. 解码并写入二进制
+echo "[2/6] 解码二进制..."
+mkdir -p "\$TMP"
+echo '$B64_BIN' | base64 -d > "\$TMP/trollserverd"
+chmod 755 "\$TMP/trollserverd"
 
-# 4. 加载服务
-echo "[4/4] 加载 daemon..."
-launchctl load "$PLIST_PATH"
+# 4. 解码并写入 plist
+echo "[3/6] 解码 LaunchDaemon plist..."
+echo '$B64_PLIST' | base64 -d > "\$TMP/com.trollserver.daemon.plist"
 
-echo ""
-echo "=== 安装完成 ==="
-echo " 二进制: $DAEMON_PATH"
-echo " Plist:  $PLIST_PATH"
-echo " 日志:   /var/mobile/Library/Logs/trollserver.log"
-echo ""
-echo " 管理命令:"
-echo "   查看状态: launchctl list | grep trollserver"
-echo "   停止服务: launchctl unload $PLIST_PATH"
-echo "   启动服务: launchctl load $PLIST_PATH"
-echo "   实时日志: tail -f /var/mobile/Library/Logs/trollserver.log"
+# 5. 安装文件
+echo "[4/6] 安装文件..."
+mkdir -p /usr/local/bin "\$LOG_DIR"
+mv "\$TMP/trollserverd" "\$DAEMON_PATH"
+mv "\$TMP/com.trollserver.daemon.plist" "\$PLIST_PATH"
+chown root:wheel "\$DAEMON_PATH" "\$PLIST_PATH"
+chmod 755 "\$DAEMON_PATH"
+chmod 644 "\$PLIST_PATH"
+rm -rf "\$TMP"
+
+# 6. 加载服务
+echo "[5/6] 加载 daemon..."
+launchctl load "\$PLIST_PATH"
+sleep 1
+
+# 7. 验证
+echo "[6/6] 验证..."
+if launchctl list | grep -q com.trollserver.daemon; then
+    BIN_SIZE=\$(du -h "\$DAEMON_PATH" | cut -f1)
+    echo ""
+    echo "========================================"
+    echo " ✅ 安装成功!"
+    echo "========================================"
+    echo " 二进制: \$DAEMON_PATH (\$BIN_SIZE)"
+    echo " Plist:  \$PLIST_PATH"
+    echo " 日志:   \$LOG_DIR/trollserver.log"
+    echo ""
+    echo " 管理命令:"
+    echo "   查看状态: launchctl list | grep trollserver"
+    echo "   停止服务: launchctl unload \$PLIST_PATH"
+    echo "   启动服务: launchctl load \$PLIST_PATH"
+    echo "   实时日志: tail -f \$LOG_DIR/trollserver.log"
+    echo ""
+else
+    echo ""
+    echo "❌ daemon 启动失败，查看日志:"
+    echo "   cat \$LOG_DIR/trollserver.log"
+    echo "   cat \$LOG_DIR/trollserver_err.log"
+    exit 1
+fi
 INSTALL_SCRIPT
-    chmod +x "$BUILD_DIR/install-daemon.sh"
+
+    chmod +x "$BUILD_DIR/trollserverd-install.sh"
+    SCRIPT_SIZE=$(du -h "$BUILD_DIR/trollserverd-install.sh" | cut -f1)
 
     echo ""
     echo "========================================"
     echo " Daemon 构建成功!"
     echo "========================================"
-    echo " 二进制:     $OUTPUT_DAEMON"
-    echo " 大小:       $DAEMON_SIZE"
-    echo " Plist:      $BUILD_DIR/com.trollserver.daemon.plist"
-    echo " 安装脚本:   $BUILD_DIR/install-daemon.sh"
+    echo " 自包含安装脚本:  build/trollserverd-install.sh ($SCRIPT_SIZE)"
     echo ""
-    echo " === 部署步骤 ==="
-    echo " 1. 将 build/ 目录下的 3 个文件传到设备:"
-    echo "    scp build/TrollServerd build/com.trollserver.daemon.plist build/install-daemon.sh root@<设备IP>:/tmp/"
+    echo " === 部署只需一步 ==="
+    echo " 把 trollserverd-install.sh 传到手机上，SSH 执行:"
     echo ""
-    echo " 2. SSH 到设备执行安装:"
-    echo "    ssh root@<设备IP> 'cd /tmp && chmod +x install-daemon.sh && ./install-daemon.sh'"
+    echo "   scp build/trollserverd-install.sh root@<设备IP>:/tmp/"
+    echo "   ssh root@<设备IP> 'bash /tmp/trollserverd-install.sh'"
+    echo ""
+    echo " 或者在手机上用终端工具(如 NewTerm)直接:"
+    echo "   bash /路径/trollserverd-install.sh"
     echo ""
     exit 0
 fi
