@@ -238,6 +238,7 @@ SWIFT_FILES=(
     "$SRC_DIR/ServiceMonitor.swift"
     "$SRC_DIR/BootstrapServices.swift"
     "$SRC_DIR/UDPBroadcaster.swift"
+    "$SRC_DIR/DaemonBootstrap.swift"
 )
 
 # 创建临时 Info.plist 复制
@@ -273,9 +274,18 @@ cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/$APP_NAME"
 chmod +x "$APP_DIR/$APP_NAME"
 
 cp "$SRC_DIR/Info.plist" "$APP_DIR/Info.plist"
-cp -r "$SRC_DIR/Assets.xcassets/AppIcon.appiconset" "$APP_DIR/"
+cp "$SRC_DIR/TrollServer.entitlements" "$APP_DIR/"
+
+# 复制 AppIcon（如果有）
+if [ -d "$SRC_DIR/Assets.xcassets/AppIcon.appiconset" ]; then
+    cp -r "$SRC_DIR/Assets.xcassets/AppIcon.appiconset" "$APP_DIR/"
+fi
 
 echo "APPL????" > "$APP_DIR/PkgInfo"
+
+# 提示：巨魔安装时使用此 entitlements
+echo "  ⚠️  巨魔安装时请使用以下 entitlements 签名:"
+echo "     ldid -S$SRC_DIR/TrollServer.entitlements $APP_DIR/$APP_NAME"
 
 echo "  [OK] .app Bundle 创建完成: $APP_DIR"
 

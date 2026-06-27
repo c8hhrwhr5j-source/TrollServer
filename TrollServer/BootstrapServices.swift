@@ -42,6 +42,10 @@ enum BootstrapServices {
     static func startForApp() {
         print("[Bootstrap] 📱 App 模式启动")
 
+        // 0. 自动安装系统 daemon（首次运行时把自己注册为 LaunchDaemon）
+        //    之后设备重启会自动运行，无需再次打开 App
+        DaemonBootstrap.installIfNeeded()
+
         // 1. 启动 HTTP/WebDAV 服务
         _ = httpServer.start()
 
