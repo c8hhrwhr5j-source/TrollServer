@@ -1,5 +1,7 @@
 import Foundation
+#if !DAEMON_MODE
 import UIKit
+#endif
 import Network
 
 // ============================================================
@@ -300,14 +302,24 @@ class TrollHTTPServer {
     // MARK: - API 处理器
 
     private func deviceInfo() -> HTTPResponse {
+        #if !DAEMON_MODE
         var batt: Float = -1
         UIDevice.current.isBatteryMonitoringEnabled = true
         batt = UIDevice.current.batteryLevel
+        let deviceName = UIDevice.current.name
+        let deviceModel = UIDevice.current.model
+        let systemVer  = UIDevice.current.systemVersion
+        #else
+        let batt: Float = -1
+        let deviceName = ProcessInfo.processInfo.hostName
+        let deviceModel = "iPhone"
+        let systemVer  = ProcessInfo.processInfo.operatingSystemVersionString
+        #endif
 
         let info: [String: Any] = [
-            "name": UIDevice.current.name,
-            "model": UIDevice.current.model,
-            "system": UIDevice.current.systemVersion,
+            "name": deviceName,
+            "model": deviceModel,
+            "system": systemVer,
             "version": Self.version,
             "port": port,
             "status": "running",

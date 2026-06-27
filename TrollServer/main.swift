@@ -1,4 +1,6 @@
+#if !DAEMON_MODE
 import UIKit
+#endif
 import Foundation
 
 // ============================================================
@@ -40,8 +42,38 @@ private func setupExceptionHandler() {
 }
 
 // ===================== 入口 =====================
+#if DAEMON_MODE
+
+// ========== 守护进程模式（纯二进制，无 UIKit） ==========
+try? FileManager.default.createDirectory(
+    atPath: "/var/mobile/Library/Logs",
+    withIntermediateDirectories: true
+)
+
+let logMsg = "[\(Date())] TrollServer v2.0 daemon starting (PID=\(getpid()))\n"
+try? logMsg.data(using: .utf8)?.appendTo(file: daemonLogPath)
+print("[TrollServer] 🖥️  Daemon mode starting (PID=\(getpid()))...")
+
+setupExceptionHandler()
+
+// 启动服务 + 看门狗
+BootstrapServices.startForDaemon()
+
+// 保持进程存活（每 5 分钟心跳日志）
+Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+    autoreleasepool {
+        let stats = BootstrapServices.httpServer
+        print("[TrollServer] 💓 Daemon alive (uptime=\(Int(-stats.startTime.timeIntervalSinceNow))s, requests=\(stats.requestCount))")
+    }
+}
+
+RunLoop.main.run()
+
+#else
+
+// ========== App 模式入口 ==========
 if CommandLine.arguments.contains("--daemon") {
-    // ========== 守护进程模式 ==========
+    // ========== App 内守护进程模式 ==========
     try? FileManager.default.createDirectory(
         atPath: "/var/mobile/Library/Logs",
         withIntermediateDirectories: true
@@ -53,10 +85,8 @@ if CommandLine.arguments.contains("--daemon") {
 
     setupExceptionHandler()
 
-    // 启动服务 + 看门狗
     BootstrapServices.startForDaemon()
 
-    // 保持进程存活（每 5 分钟心跳日志）
     Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
         autoreleasepool {
             let stats = BootstrapServices.httpServer
@@ -65,7 +95,6 @@ if CommandLine.arguments.contains("--daemon") {
     }
 
     RunLoop.main.run()
-
 } else {
     // ========== App 模式 ==========
     UIApplicationMain(
@@ -75,3 +104,5 @@ if CommandLine.arguments.contains("--daemon") {
         NSStringFromClass(AppDelegate.self)
     )
 }
+
+#endif
