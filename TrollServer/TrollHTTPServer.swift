@@ -89,9 +89,9 @@ class TrollHTTPServer {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            params.requiredInterfaceType = .wifi
+            // 不限制接口类型：iOS 设备可能通过 Wi-Fi、热点、USB 等方式连接
 
-            listener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: port))
+            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
             listener?.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:

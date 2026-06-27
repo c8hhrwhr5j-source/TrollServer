@@ -104,7 +104,7 @@ class ServiceMonitor {
     private func checkPort(_ port: UInt16) -> Bool {
         let conn = NWConnection(
             host: NWEndpoint.Host("127.0.0.1"),
-            port: NWEndpoint.Port(integerLiteral: port),
+            port: NWEndpoint.Port(rawValue: port)!,
             using: .tcp
         )
         let sem = DispatchSemaphore(value: 0)
@@ -135,7 +135,7 @@ class ServiceMonitor {
     private func checkHeartbeat(_ port: UInt16) -> Bool {
         let conn = NWConnection(
             host: NWEndpoint.Host("127.0.0.1"),
-            port: NWEndpoint.Port(integerLiteral: port),
+            port: NWEndpoint.Port(rawValue: port)!,
             using: .tcp
         )
         let sem = DispatchSemaphore(value: 0)
