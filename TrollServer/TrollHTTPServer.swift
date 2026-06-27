@@ -303,30 +303,45 @@ class TrollHTTPServer {
 
     private func deviceInfo() -> HTTPResponse {
         #if !DAEMON_MODE
-        var batt: Float = -1
         UIDevice.current.isBatteryMonitoringEnabled = true
-        batt = UIDevice.current.batteryLevel
+        let battLevel = UIDevice.current.batteryLevel
+        let batt: Int = battLevel >= 0 ? Int(battLevel * 100) : -1
         let deviceName = UIDevice.current.name
         let deviceModel = UIDevice.current.model
         let systemVer  = UIDevice.current.systemVersion
         #else
-        let batt: Float = -1
+        let batt: Int = -1
         let deviceName = ProcessInfo.processInfo.hostName
         let deviceModel = "iPhone"
         let systemVer  = ProcessInfo.processInfo.operatingSystemVersionString
         #endif
 
+        // 获取设备 UUID（首次生成后持久化，重启不变）
+        let uuidPath = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/.device_uuid")
+        let fm = FileManager.default
+        var deviceUUID: String
+        if fm.fileExists(atPath: uuidPath),
+           let stored = try? String(contentsOfFile: uuidPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+           !stored.isEmpty {
+            deviceUUID = stored
+        } else {
+            deviceUUID = UUID().uuidString
+            try? deviceUUID.write(toFile: uuidPath, atomically: true, encoding: .utf8)
+        }
+
         let info: [String: Any] = [
+            "uuid": deviceUUID,
             "name": deviceName,
             "model": deviceModel,
-            "system": systemVer,
+            "systemVersion": systemVer,
             "version": Self.version,
             "port": port,
             "status": "running",
-            "uptime": Int(-startTime.timeIntervalSinceNow),
+            "serverUptime": Int(-startTime.timeIntervalSinceNow),
             "battery": batt,
-            "requests": requestCount,
-            "docRoot": docRoot
+            "connectionsHandled": requestCount,
+            "basePath": docRoot,
+            "wifiIP": UDPBroadcaster.getWiFiIPAddress() ?? "0.0.0.0"
         ]
         guard let json = try? JSONSerialization.data(withJSONObject: info, options: .prettyPrinted) else {
             return .internalError()

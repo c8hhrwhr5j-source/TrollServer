@@ -1,10 +1,12 @@
 #!/bin/bash
 # ============================================================
-#  TrollServer 构建脚本
+#  TrollServer 构建脚本 v2.1
 #  用法:
 #    ./build.sh             构建 Release IPA
 #    ./build.sh debug       构建 Debug IPA (含调试符号)
 #    ./build.sh daemon      构建系统级 daemon 纯二进制
+#    ./build.sh all         构建 IPA + daemon (完整构建)
+#    ./build.sh validate    预打包检查（不构建）
 #    ./build.sh clean       清理构建产物
 # ============================================================
 set -e
@@ -22,16 +24,162 @@ OUTPUT_DAEMON="$BUILD_DIR/${APP_NAME}d"
 ICON_SRC="$PROJECT_DIR/123.png"
 ICON_DIR="$SRC_DIR/Assets.xcassets/AppIcon.appiconset"
 
-# 编译模式
+# ============================================================
+#  预打包环境校验 (所有目标共享)
+# ============================================================
+run_validate() {
+    local errors=0
+    local warnings=0
+    echo "========================================"
+    echo " TrollServer 预打包审查"
+    echo "========================================"
+    echo ""
+
+    # ---- 编译环境 ----
+    echo "--- [1/7] 编译环境 ---"
+    if ! command -v swiftc &>/dev/null; then
+        echo "  ❌ swiftc 未找到（需要 Xcode Command Line Tools）"
+        ((errors++))
+    else
+        local ver=$(swiftc --version | head -1)
+        echo "  ✅ $ver"
+    fi
+    if ! command -v xcrun &>/dev/null; then
+        echo "  ❌ xcrun 未找到"
+        ((errors++))
+    else
+        echo "  ✅ xcrun 可用"
+    fi
+    xcrun --sdk iphoneos --show-sdk-path &>/dev/null && echo "  ✅ iPhoneOS SDK 可用" || { echo "  ❌ iPhoneOS SDK 不可用"; ((errors++)); }
+
+    # ---- 必需源文件 ----
+    echo "--- [2/7] 必需源文件 ---"
+    local required_files=(
+        "main.swift"
+        "AppDelegate.swift"
+        "ViewController.swift"
+        "TrollHTTPServer.swift"
+        "KeepAliveManager.swift"
+        "ServiceMonitor.swift"
+        "BootstrapServices.swift"
+        "UDPBroadcaster.swift"
+        "DaemonBootstrap.swift"
+    )
+    for f in "${required_files[@]}"; do
+        if [ -f "$SRC_DIR/$f" ]; then
+            echo "  ✅ $f"
+        else
+            echo "  ❌ $f 缺失!"
+            ((errors++))
+        fi
+    done
+
+    # ---- 配置文件 ----
+    echo "--- [3/7] 配置文件 ---"
+    [ -f "$SRC_DIR/Info.plist" ] && echo "  ✅ Info.plist" || { echo "  ❌ Info.plist 缺失!"; ((errors++)); }
+    [ -f "$SRC_DIR/TrollServer.entitlements" ] && echo "  ✅ TrollServer.entitlements" || { echo "  ⚠️  entitlements 缺失（巨魔安装时需要）"; ((warnings++)); }
+    [ -f "$PROJECT_DIR/com.trollserver.daemon.plist" ] && echo "  ✅ com.trollserver.daemon.plist" || { echo "  ⚠️  daemon plist 缺失（daemon 构建需要）"; ((warnings++)); }
+
+    # ---- 图标资源 ----
+    echo "--- [4/7] 图标资源 ---"
+    [ -f "$ICON_SRC" ] && echo "  ✅ $ICON_SRC" || { echo "  ⚠️  $ICON_SRC 不存在（IPA 图标将为默认图标）"; ((warnings++)); }
+
+    # ---- Info.plist 完整性 ----
+    echo "--- [5/7] Info.plist 完整性 ---"
+    local plist="$SRC_DIR/Info.plist"
+    if [ -f "$plist" ]; then
+        grep -q "CFBundleIdentifier" "$plist" && echo "  ✅ CFBundleIdentifier: $BUNDLE_ID" || { echo "  ❌ CFBundleIdentifier 缺失"; ((errors++)); }
+        grep -q "CFBundleExecutable" "$plist" && echo "  ✅ CFBundleExecutable: $APP_NAME" || { echo "  ❌ CFBundleExecutable 缺失"; ((errors++)); }
+        grep -q "MinimumOSVersion" "$plist" && echo "  ✅ MinimumOSVersion" || echo "  ⚠️  MinimumOSVersion 缺失（将使用编译参数）"
+        grep -q "CFBundleVersion" "$plist" && echo "  ✅ CFBundleVersion" || { echo "  ❌ CFBundleVersion 缺失"; ((errors++)); }
+        grep -q "CFBundleShortVersionString" "$plist" && echo "  ✅ CFBundleShortVersionString" || echo "  ⚠️  CFBundleShortVersionString 缺失"
+        grep -q "UIBackgroundModes" "$plist" && echo "  ✅ UIBackgroundModes (后台运行策略)" || echo "  ⚠️  无后台模式声明（App 模式下可能被杀）"
+    fi
+
+    # ---- 语法快速检查 ----
+    echo "--- [6/7] Swift 语法快速检查 ---"
+    SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+    for f in "$SRC_DIR"/*.swift; do
+        local fn=$(basename "$f")
+        if swiftc -parse -sdk "$SDK_PATH" -target arm64-apple-ios14.0 "$f" 2>/dev/null; then
+            echo "  ✅ $fn"
+        else
+            echo "  ❌ $fn 语法检查失败"
+            ((errors++))
+        fi
+    done
+
+    # ---- API 兼容性检查 ----
+    echo "--- [7/7] API 字段兼容性 ---"
+    if grep -q '"uuid"' "$SRC_DIR/TrollHTTPServer.swift"; then
+        echo "  ✅ /api/device 包含 uuid 字段"
+    else
+        echo "  ❌ /api/device 缺少 uuid 字段（Go 中控需要）"
+        ((errors++))
+    fi
+    if grep -q '"systemVersion"' "$SRC_DIR/TrollHTTPServer.swift"; then
+        echo "  ✅ /api/device 包含 systemVersion 字段"
+    else
+        echo "  ❌ /api/device 缺少 systemVersion 字段"
+        ((errors++))
+    fi
+    if grep -q '"wifiIP"' "$SRC_DIR/TrollHTTPServer.swift"; then
+        echo "  ✅ /api/device 包含 wifiIP 字段"
+    else
+        echo "  ❌ /api/device 缺少 wifiIP 字段"
+        ((errors++))
+    fi
+
+    echo ""
+    echo "========================================"
+    echo " 审查结果: $errors 错误, $warnings 警告"
+    echo "========================================"
+    if [ $errors -gt 0 ]; then
+        echo " ❌ 发现 $errors 个错误，请修复后重试"
+        exit 1
+    fi
+    echo " ✅ 所有检查通过，可以开始构建"
+    echo ""
+}
+
+# ============================================================
+#  参数解析
+# ============================================================
 CONFIGURATION="Release"
 BUILD_TARGET="ipa"
+
+if [ "$1" = "validate" ]; then
+    run_validate
+    exit 0
+fi
 if [ "$1" = "debug" ]; then CONFIGURATION="Debug"; BUILD_TARGET="ipa"; fi
 if [ "$1" = "daemon" ]; then BUILD_TARGET="daemon"; fi
+if [ "$1" = "all" ]; then BUILD_TARGET="all"; fi
 if [ "$1" = "clean" ]; then
     echo "[Clean] 清理构建产物..."
     rm -rf "$BUILD_DIR" "$DERIVED_DATA"
     echo "[Clean] 完成"
     exit 0
+fi
+if [ "$1" = "help" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "TrollServer 构建脚本 v2.1"
+    echo ""
+    echo "用法: ./build.sh [目标]"
+    echo ""
+    echo "目标:"
+    echo "  (无参数)   构建 Release IPA"
+    echo "  debug      构建 Debug IPA (含调试符号)"
+    echo "  daemon     构建系统级 daemon 纯二进制 + 自包含安装脚本"
+    echo "  all        构建 IPA + daemon (完整构建)"
+    echo "  validate   预打包环境 & 代码审查（不构建）"
+    echo "  clean      清理所有构建产物"
+    echo ""
+    exit 0
+fi
+
+# 构建前自动校验（除非显式跳过）
+if [ "$SKIP_VALIDATE" != "1" ]; then
+    run_validate
 fi
 
 # 公共：获取 SDK 路径和参数
@@ -43,7 +191,7 @@ SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
 # ============================================================
 #  DAEMON 构建
 # ============================================================
-if [ "$BUILD_TARGET" = "daemon" ]; then
+if [ "$BUILD_TARGET" = "daemon" ] || [ "$BUILD_TARGET" = "all" ]; then
     echo "========================================"
     echo " TrollServer 系统级 Daemon 构建工具"
     echo "========================================"
@@ -196,7 +344,14 @@ INSTALL_SCRIPT
     echo " 或者在手机上用终端工具(如 NewTerm)直接:"
     echo "   bash /路径/trollserverd-install.sh"
     echo ""
-    exit 0
+
+    # 如果只是 daemon 构建则在此退出，all 模式继续到 IPA
+    if [ "$BUILD_TARGET" = "daemon" ]; then
+        exit 0
+    fi
+    echo ""
+    echo "→ 继续构建 IPA..."
+    echo ""
 fi
 
 # ============================================================

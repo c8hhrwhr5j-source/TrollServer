@@ -53,6 +53,7 @@ jobs:
             "TrollServer/ServiceMonitor.swift"
             "TrollServer/BootstrapServices.swift"
             "TrollServer/UDPBroadcaster.swift"
+            "TrollServer/DaemonBootstrap.swift"
           )
 
           # 复制 Info.plist
