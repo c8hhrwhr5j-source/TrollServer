@@ -102,7 +102,9 @@ class TrollHTTPServer {
     private static let listenBacklog: Int32 = 128
     private static let recvTimeoutSec: time_t = 30
     private static let sendTimeoutSec: time_t = 30
-    static let defaultDocRoot = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/Game")
+    // 使用 /var/mobile/Documents/Game/ 作为 TrollStore App 间共享目录
+    // "autoRun 梦幻" 脚本和 TrollServer 都读写此目录，无需跨 App HTTP 同步
+    static let defaultDocRoot = "/var/mobile/Documents/Game"
 
     // ===================== 初始化 =====================
     init(port: UInt16 = 51111, docRoot: String? = nil) {
@@ -407,10 +409,6 @@ class TrollHTTPServer {
         if p == "/api/browse" || p.hasPrefix("/api/browse?") {
             return handleBrowse(req)
         }
-        // POST /api/game-data — 接收来自"autoRun 梦幻"脚本的数据（跨 App 数据交换）
-        if p == "/api/game-data" && req.method == "POST" {
-            return handleGameDataPOST(req)
-        }
         // WebDAV / 文件操作
         let filePath = (docRoot as NSString).appendingPathComponent(p)
 
@@ -488,23 +486,6 @@ class TrollHTTPServer {
             return .internalError()
         }
         return .ok(json, contentType: "application/json")
-    }
-
-    // MARK: - API 处理器（跨 App 数据交换）
-
-    /// POST /api/game-data — 接收来自 autoRun 脚本的数据，写入 TrollServer 的 docRoot
-    private func handleGameDataPOST(_ req: HTTPRequest) -> HTTPResponse {
-        let filePath = (docRoot as NSString).appendingPathComponent("data.txt")
-        let dir = (filePath as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        do {
-            try req.body.write(to: URL(fileURLWithPath: filePath))
-            print("[HTTP] 📤 POST /api/game-data → \(filePath) (\(req.body.count) bytes)")
-            return .ok("ok".data(using: .utf8)!)
-        } catch {
-            print("[HTTP] ❌ game-data 写入失败: \(error)")
-            return .internalError()
-        }
     }
 
     // MARK: - 文件操作
