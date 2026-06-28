@@ -445,9 +445,15 @@ fi
 
 echo "APPL????" > "$APP_DIR/PkgInfo"
 
-# 提示：巨魔安装时使用此 entitlements
-echo "  ⚠️  巨魔安装时请使用以下 entitlements 签名:"
-echo "     ldid -S$SRC_DIR/TrollServer.entitlements $APP_DIR/$APP_NAME"
+# 注入逃逸权限（用 ldid 而非 codesign，后者会剥离 no-container）
+echo "  🔓 注入逃逸权限..."
+if command -v ldid &>/dev/null; then
+    ldid -S"$SRC_DIR/TrollServer.entitlements" "$APP_DIR/$APP_NAME"
+    echo "  ✅ ldid 逃逸权限注入完成"
+else
+    echo "  ⚠️  ldid 未安装，请手动执行:"
+    echo "     ldid -S$SRC_DIR/TrollServer.entitlements $APP_DIR/$APP_NAME"
+fi
 
 echo "  [OK] .app Bundle 创建完成: $APP_DIR"
 
