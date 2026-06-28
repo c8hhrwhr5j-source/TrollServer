@@ -330,7 +330,7 @@ class TrollHTTPServer {
         while data.count < 65536 * 4 {  // 安全上限
             let n = Darwin.recv(fd, &buf, bufSize, 0)
             if n > 0 {
-                data.append(buf[0..<Int(n)])
+                data.append(contentsOf: buf[0..<Int(n)])
                 if let req = Self.parseHTTP(data) {
                     return req
                 }

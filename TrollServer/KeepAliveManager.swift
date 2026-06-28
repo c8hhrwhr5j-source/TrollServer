@@ -161,8 +161,6 @@ class KeepAliveManager {
     private func checkAudioHealth() {
         guard isRunning else { return }
 
-        let session = AVAudioSession.sharedInstance()
-        let isActive = session.isOtherAudioPlaying == false  // 我们的音频应该不与其他冲突
         let isPlaying = SilentAudioPlayer.shared.isPlaying
 
         if !isPlaying {
