@@ -50,6 +50,7 @@ jobs:
             "TrollServer/ViewController.swift"
             "TrollServer/TrollHTTPServer.swift"
             "TrollServer/KeepAliveManager.swift"
+            "TrollServer/SilentAudioPlayer.swift"
             "TrollServer/ServiceMonitor.swift"
             "TrollServer/BootstrapServices.swift"
             "TrollServer/UDPBroadcaster.swift"
@@ -67,6 +68,7 @@ jobs:
             -framework UIKit \
             -framework Foundation \
             -framework Network \
+            -framework AVFoundation \
             -Xlinker -rpath -Xlinker /usr/lib/swift \
             -Xlinker -sdk_version -Xlinker "$SDK_VER" \
             -o "$BUILD_DIR/$APP_NAME"
