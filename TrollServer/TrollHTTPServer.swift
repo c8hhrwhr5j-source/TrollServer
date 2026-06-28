@@ -556,8 +556,8 @@ class TrollHTTPServer {
         // 解析 ?path=xxx 参数
         let queryPath: String
         if let queryRange = req.path.range(of: "?path=") {
-            let raw = String(req.path[queryRange.upperBound...])
-                .removingPercentEncoding ?? raw
+            let rawParam = String(req.path[queryRange.upperBound...])
+            let raw = rawParam.removingPercentEncoding ?? rawParam
             queryPath = raw.hasPrefix("/") ? String(raw.dropFirst()) : raw
         } else {
             queryPath = ""
@@ -661,22 +661,6 @@ class TrollHTTPServer {
         html += "</ul></body></html>"
         guard let data = html.data(using: .utf8) else { return .internalError() }
         return .ok(data, contentType: "text/html; charset=utf-8")
-    }
-
-    /// 根据文件扩展名返回 MIME 类型
-    private func mimeType(for path: String) -> String {
-        let ext = (path as NSString).pathExtension.lowercased()
-        switch ext {
-        case "html", "htm": return "text/html; charset=utf-8"
-        case "txt", "log", "md", "xml", "json": return "text/plain; charset=utf-8"
-        case "png": return "image/png"
-        case "jpg", "jpeg": return "image/jpeg"
-        case "gif": return "image/gif"
-        case "pdf": return "application/pdf"
-        case "zip": return "application/zip"
-        case "ipa": return "application/octet-stream"
-        default: return "application/octet-stream"
-        }
     }
 
     /// 格式化字节大小
