@@ -28,6 +28,9 @@ class ViewController: UIViewController {
     // 定时刷新
     private var refreshTimer: Timer?
 
+    /// App 是否运行在客户端模式（不绑定端口，从 daemon HTTP 读取状态）
+    var clientMode: Bool = false
+
     // ===================== 生命周期 =====================
 
     override func viewDidLoad() {
@@ -238,6 +241,62 @@ class ViewController: UIViewController {
     }
 
     @objc private func updateStatus() {
+        if clientMode {
+            updateStatusFromDaemon()
+        } else {
+            updateStatusLocal()
+        }
+    }
+
+    /// 客户端模式：从 daemon HTTP API 读取状态
+    private func updateStatusFromDaemon() {
+        TrollServerClient.shared.fetchStatus { [weak self] status in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard let status = status else {
+                    self.serviceStatusLabel.attributedText = self.buildLine(
+                        icon: "⚠️", title: "HTTP/WebDAV (51111)", detail: "daemon 无响应", ok: false
+                    )
+                    self.keepaliveLabel.text = "🔋 保活: 客户端模式（端口由 daemon 维护）"
+                    self.monitorLabel.text = "🩺 daemon 可能未运行"
+                    self.statsLabel.text = "📊 等待连接..."
+                    self.ipAddressLabel.text = "📶 通过 localhost 连接"
+                    return
+                }
+
+                let running = status.isRunning
+                let icon = running ? "●" : "○"
+                let colorText = running ? "运行中 (daemon)" : "已停止"
+                self.serviceStatusLabel.attributedText = self.buildLine(
+                    icon: icon, title: "HTTP/WebDAV (51111)", detail: colorText, ok: running
+                )
+
+                let keepAlive = KeepAliveManager.shared
+                let audioOK = keepAlive.audioHealthy && (SilentAudioPlayer.shared.isPlaying)
+                let audioStatus = audioOK ? "✅音频" : "⚠️音频"
+                self.keepaliveLabel.text = "🔋 保活: 客户端模式 + \(audioStatus) | daemon 维护端口"
+
+                self.monitorLabel.text = "🩺 daemon 托管 · 杀 App 不影响端口"
+
+                let uptime = status.uptimeSeconds
+                let requests = status.requestCount
+                self.statsLabel.text = "📊 请求: \(requests) · 运行: \(self.formatUptime(uptime))"
+
+                if !status.wifiIP.isEmpty && status.wifiIP != "0.0.0.0" {
+                    self.ipAddressLabel.text = "📶 \(status.wifiIP):51111"
+                } else if let ip = self.getWiFiIP() {
+                    self.ipAddressLabel.text = "📶 \(ip):51111"
+                } else {
+                    self.ipAddressLabel.text = "⚠️ 未连接 WiFi"
+                }
+
+                self.docRootLabel.text = "📂 版本: \(status.version) | 设备: \(status.deviceName)"
+            }
+        }
+    }
+
+    /// 服务端模式：直接读取本地对象状态
+    private func updateStatusLocal() {
         let server = BootstrapServices.httpServer
         let running = server.isRunning
         let monitor = ServiceMonitor.shared
@@ -263,7 +322,7 @@ class ViewController: UIViewController {
 
             // 统计
             let uptime = Int(-server.startTime.timeIntervalSinceNow)
-            self.statsLabel.text = "📊 请求: \(server.requestCount) · 运行: \(uptime)s"
+            self.statsLabel.text = "📊 请求: \(server.requestCount) · 运行: \(self.formatUptime(uptime))"
 
             // IP
             if let ip = self.getWiFiIP() {
@@ -276,6 +335,14 @@ class ViewController: UIViewController {
             let doc = TrollHTTPServer.defaultDocRoot
             self.docRootLabel.text = "📂 \(doc)"
         }
+    }
+
+    private func formatUptime(_ seconds: Int) -> String {
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m\(seconds % 60)s" }
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        return "\(h)h\(m)m"
     }
 
     private func buildLine(icon: String, title: String, detail: String, ok: Bool) -> NSAttributedString {
@@ -294,6 +361,22 @@ class ViewController: UIViewController {
     // ===================== 操作 =====================
 
     @objc private func restartService() {
+        if clientMode {
+            // 客户端模式：通过 HTTP 通知 daemon 重启（daemon 的 ServiceMonitor 会自动处理）
+            // 简单方式：ping daemon，触发看门狗检测
+            TrollServerClient.shared.checkDaemonAlive { [weak self] alive in
+                DispatchQueue.main.async {
+                    self?.updateStatus()
+                    if !alive {
+                        self?.serviceStatusLabel.attributedText = self?.buildLine(
+                            icon: "⚠️", title: "HTTP/WebDAV (51111)",
+                            detail: "daemon 离线，等待自动恢复...", ok: false
+                        )
+                    }
+                }
+            }
+            return
+        }
         let server = BootstrapServices.httpServer
         server.stop()
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
@@ -303,6 +386,10 @@ class ViewController: UIViewController {
     }
 
     @objc private func healNow() {
+        if clientMode {
+            updateStatus()
+            return
+        }
         ServiceMonitor.shared.healNow()
         updateStatus()
     }
@@ -360,7 +447,9 @@ class ViewController: UIViewController {
         request.timeoutInterval = 5
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
-        print("[Script] 📤 发送命令: \(cmd.displayName) → \(urlString)")
+        // 客户端模式：通过本地 HTTP 直连 8989 端口
+        // 服务端模式：同样通过 HTTP（8989 转发到本地脚本引擎）
+        print("[Script] 📤 发送命令: \(cmd.displayName) → \(urlString) (模式: \(clientMode ? "客户端" : "服务端"))")
 
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             guard let self = self else { return }

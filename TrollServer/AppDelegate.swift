@@ -1,12 +1,15 @@
 import UIKit
 
 // ============================================================
-//  AppDelegate - v2.0 应用入口
+//  AppDelegate v3.2 — Daemon/App 分离架构
 //
-//  启动流程：
-//  1. BootstrapServices.startForApp() → HTTP 服务 + 保活 + 看门狗
-//  2. 设置 UI 状态页面
-//  3. 进入后台时维持保活
+//  客户端模式（daemon 已运行时）：
+//    - App 不绑定端口，通过 localhost:51111 获取状态
+//    - daemon 进程拥有端口 + 悬浮球
+//    - 杀 App 不影响端口和悬浮球
+//
+//  服务端模式（daemon 未运行时）：
+//    - App 自己启动所有服务（首次运行/过渡模式）
 // ============================================================
 
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -19,40 +22,44 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
 
-        // 1. 自启动：HTTP 服务 + 双保活 + 看门狗
+        // 1. 启动（自动检测 daemon 状态，决定客户端/服务端模式）
         BootstrapServices.startForApp()
         didBootstrap = true
 
         // 2. 设置 UI
         window = UIWindow(frame: UIScreen.main.bounds)
-        window?.rootViewController = ViewController()
+        let vc = ViewController()
+        vc.clientMode = BootstrapServices.isClientMode
+        window?.rootViewController = vc
         window?.makeKeyAndVisible()
 
-        print("[AppDelegate] ✅ App 启动完成")
+        print("[AppDelegate] ✅ App 启动完成 (模式: \(BootstrapServices.isClientMode ? "客户端" : "服务端"))")
         return true
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // 从后台返回时立即自检一次
-        ServiceMonitor.shared.healNow()
+        // 服务端模式下做自检，客户端模式下拉取远程状态
+        if !BootstrapServices.isClientMode {
+            ServiceMonitor.shared.healNow()
+        }
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
-        print("[AppDelegate] 📴 进入后台（BSD socket 持续监听，无需重启）")
-
-        // v3.1: BSD socket 的 listen 端口由内核 TCP 栈管理，
-        // 进入后台不影响已绑定的端口。无需重启服务器，
-        // 仅做一次快速自检即可。
-        ServiceMonitor.shared.healNow()
+        print("[AppDelegate] 📴 进入后台")
+        if !BootstrapServices.isClientMode {
+            ServiceMonitor.shared.healNow()
+        }
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
         print("[AppDelegate] 📱 回到前台")
-        ServiceMonitor.shared.healNow()
+        if !BootstrapServices.isClientMode {
+            ServiceMonitor.shared.healNow()
+        }
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
         BootstrapServices.stopAll()
-        print("[AppDelegate] 🛑 App 即将终止")
+        print("[AppDelegate] 🛑 App 即将终止 (端口由 daemon 继续维护)")
     }
 }

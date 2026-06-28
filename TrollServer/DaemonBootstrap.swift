@@ -124,6 +124,17 @@ enum DaemonBootstrap {
         return true
     }
 
+    /// 手动拉起 daemon（不阻塞，App 退出后 daemon 独占端口）
+    static func loadDaemon() {
+        guard FileManager.default.fileExists(atPath: daemonBinaryPath),
+              FileManager.default.fileExists(atPath: plistPath) else {
+            print("[DaemonBootstrap] ⚠️ daemon 未安装，无法加载")
+            return
+        }
+        let result = shell("launchctl load \(plistPath) 2>/dev/null")
+        print("[DaemonBootstrap] 🔄 手动拉起 daemon (launchctl 返回 \(result))")
+    }
+
     /// 卸载 daemon（保留此能力以备将来使用）
     static func uninstall() {
         _ = shell("launchctl unload \(plistPath) 2>/dev/null")
