@@ -1,11 +1,12 @@
 import UIKit
+import AVFoundation
 
 // ============================================================
-//  KeepAliveManager - 零音频 · 零耗电 · 零冲突 保活
+//  KeepAliveManager - 三重保活策略
 //
-//  策略 1: 后台任务无限续期（每 25s 续一次，卡系统 30s 窗口）
-//  策略 2: 禁用屏幕休眠
-//  策略 3: 轻量循环保持进程不退出
+//  策略 1: 静音音频无限循环（audio 后台模式，iOS 永久后台）
+//  策略 2: 后台任务无限续期（每 25s 续一次，备用）
+//  策略 3: 禁用屏幕休眠
 // ============================================================
 
 class KeepAliveManager {
@@ -25,17 +26,20 @@ class KeepAliveManager {
         guard !isRunning else { return }
         isRunning = true
 
-        print("[KeepAlive] 🔋 启动零音频保活")
+        print("[KeepAlive] 🔋 启动三重保活")
 
-        // 1. 后台任务无限续期
+        // 策略 1: 静音音频（最可靠，iOS 永不停杀）
+        SilentAudioPlayer.shared.start()
+
+        // 策略 2: 后台任务无限续期（备用兜底）
         startInfiniteBackgroundTask()
 
-        // 2. 禁止休眠
+        // 策略 3: 禁止休眠
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = true
         }
 
-        print("[KeepAlive] ✅ 保活已激活（后台任务 + 禁止休眠）")
+        print("[KeepAlive] ✅ 三重保活已激活（静音音频 + 后台任务 + 禁止休眠）")
     }
 
     func stop() {
@@ -45,6 +49,10 @@ class KeepAliveManager {
         guard isRunning else { return }
         isRunning = false
 
+        // 停止静音音频
+        SilentAudioPlayer.shared.stop()
+
+        // 停止后台任务
         if bgTask != .invalid {
             UIApplication.shared.endBackgroundTask(bgTask)
             bgTask = .invalid
@@ -61,7 +69,6 @@ class KeepAliveManager {
 
     private func startInfiniteBackgroundTask() {
         DispatchQueue.global(qos: .background).async { [weak self] in
-            // 无限轻量循环，几乎不占 CPU
             while self?.isRunning == true {
                 autoreleasepool {
                     var task: UIBackgroundTaskIdentifier = .invalid
