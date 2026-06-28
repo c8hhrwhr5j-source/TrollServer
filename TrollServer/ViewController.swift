@@ -18,6 +18,13 @@ class ViewController: UIViewController {
     private let restartBtn = UIButton(type: .system)
     private let healBtn = UIButton(type: .system)
 
+    // 脚本控制按钮
+    private let startBtn = UIButton(type: .system)
+    private let stopBtn = UIButton(type: .system)
+    private let pauseBtn = UIButton(type: .system)
+    private let resumeBtn = UIButton(type: .system)
+    private let scriptStatusLabel = UILabel()
+
     // 定时刷新
     private var refreshTimer: Timer?
 
@@ -111,10 +118,71 @@ class ViewController: UIViewController {
         btnStack.distribution = .fillEqually
         btnStack.translatesAutoresizingMaskIntoConstraints = false
 
+        // ---- 脚本控制区域 ----
+        let scriptSectionTitle = UILabel()
+        scriptSectionTitle.text = "📋 脚本控制"
+        scriptSectionTitle.font = UIFont.boldSystemFont(ofSize: 16)
+        scriptSectionTitle.textColor = .label
+        scriptSectionTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        // 2×2 网格：启动/停止 + 暂停/恢复
+        let row1 = UIStackView(arrangedSubviews: [startBtn, stopBtn])
+        row1.axis = .horizontal
+        row1.spacing = 12
+        row1.distribution = .fillEqually
+        row1.translatesAutoresizingMaskIntoConstraints = false
+
+        let row2 = UIStackView(arrangedSubviews: [pauseBtn, resumeBtn])
+        row2.axis = .horizontal
+        row2.spacing = 12
+        row2.distribution = .fillEqually
+        row2.translatesAutoresizingMaskIntoConstraints = false
+
+        // 结果反馈标签
+        scriptStatusLabel.text = ""
+        scriptStatusLabel.font = UIFont.systemFont(ofSize: 12)
+        scriptStatusLabel.textColor = .secondaryLabel
+        scriptStatusLabel.textAlignment = .center
+        scriptStatusLabel.numberOfLines = 2
+        scriptStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let scriptCard = UIView()
+        scriptCard.backgroundColor = .secondarySystemGroupedBackground
+        scriptCard.layer.cornerRadius = 12
+        scriptCard.translatesAutoresizingMaskIntoConstraints = false
+
+        let scriptStack = UIStackView(arrangedSubviews: [row1, row2, scriptStatusLabel])
+        scriptStack.axis = .vertical
+        scriptStack.spacing = 10
+        scriptStack.translatesAutoresizingMaskIntoConstraints = false
+        scriptCard.addSubview(scriptStack)
+
+        // 配置四个按钮
+        _ = {
+            let configs: [(UIButton, String, UIColor, Selector)] = [
+                (startBtn,  "▶ 启动",  UIColor.systemGreen,  #selector(scriptStart)),
+                (stopBtn,   "⏹ 停止",  UIColor.systemRed,    #selector(scriptStop)),
+                (pauseBtn,  "⏸ 暂停",  UIColor.systemOrange, #selector(scriptPause)),
+                (resumeBtn, "▶ 恢复",  UIColor.systemBlue,   #selector(scriptResume)),
+            ]
+            for (btn, title, color, action) in configs {
+                btn.setTitle(title, for: .normal)
+                btn.setTitleColor(.white, for: .normal)
+                btn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 15)
+                btn.backgroundColor = color
+                btn.layer.cornerRadius = 10
+                btn.contentEdgeInsets = UIEdgeInsets(top: 12, left: 8, bottom: 12, right: 8)
+                btn.addTarget(self, action: action, for: .touchUpInside)
+                btn.isEnabled = true
+            }
+        }()
+
         view.addSubview(titleLabel)
         view.addSubview(subtitleLabel)
         view.addSubview(card)
         view.addSubview(btnStack)
+        view.addSubview(scriptSectionTitle)
+        view.addSubview(scriptCard)
 
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 40),
@@ -135,6 +203,19 @@ class ViewController: UIViewController {
             btnStack.topAnchor.constraint(equalTo: card.bottomAnchor, constant: 24),
             btnStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             btnStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+
+            // 脚本控制区域
+            scriptSectionTitle.topAnchor.constraint(equalTo: btnStack.bottomAnchor, constant: 28),
+            scriptSectionTitle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+
+            scriptCard.topAnchor.constraint(equalTo: scriptSectionTitle.bottomAnchor, constant: 10),
+            scriptCard.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            scriptCard.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+
+            scriptStack.topAnchor.constraint(equalTo: scriptCard.topAnchor, constant: 16),
+            scriptStack.leadingAnchor.constraint(equalTo: scriptCard.leadingAnchor, constant: 16),
+            scriptStack.trailingAnchor.constraint(equalTo: scriptCard.trailingAnchor, constant: -16),
+            scriptStack.bottomAnchor.constraint(equalTo: scriptCard.bottomAnchor, constant: -16),
         ])
     }
 
@@ -224,6 +305,45 @@ class ViewController: UIViewController {
     @objc private func healNow() {
         ServiceMonitor.shared.healNow()
         updateStatus()
+    }
+
+    // ===================== 脚本控制操作 =====================
+
+    @objc private func scriptStart() {
+        sendScriptCommand(.start)
+    }
+
+    @objc private func scriptStop() {
+        sendScriptCommand(.stop)
+    }
+
+    @objc private func scriptPause() {
+        sendScriptCommand(.pause)
+    }
+
+    @objc private func scriptResume() {
+        sendScriptCommand(.resume)
+    }
+
+    private func sendScriptCommand(_ cmd: ShellScriptManager.Command) {
+        // 禁用所有按钮，防止重复点击
+        setScriptButtonsEnabled(false)
+        scriptStatusLabel.text = "⏳ 正在发送 \(cmd.displayName) 命令..."
+        scriptStatusLabel.textColor = .secondaryLabel
+
+        ShellScriptManager.shared.send(cmd) { [weak self] result in
+            guard let self = self else { return }
+            self.setScriptButtonsEnabled(true)
+            self.scriptStatusLabel.text = result.message
+            self.scriptStatusLabel.textColor = result.success ? .systemGreen : .systemRed
+        }
+    }
+
+    private func setScriptButtonsEnabled(_ enabled: Bool) {
+        startBtn.isEnabled = enabled
+        stopBtn.isEnabled = enabled
+        pauseBtn.isEnabled = enabled
+        resumeBtn.isEnabled = enabled
     }
 
     // ===================== 工具 =====================
