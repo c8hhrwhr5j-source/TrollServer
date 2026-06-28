@@ -151,7 +151,8 @@ enum DaemonBootstrap {
         }
         var status: Int32 = 0
         waitpid(pid, &status, 0)
-        return WEXITSTATUS(status)
+        // WEXITSTATUS 宏在 iOS 不可用，直接位运算提取
+        return (status >> 8) & 0xFF
     }
 
     private static func createMarker() {
