@@ -407,6 +407,10 @@ class TrollHTTPServer {
         if p == "/api/browse" || p.hasPrefix("/api/browse?") {
             return handleBrowse(req)
         }
+        // POST /api/game-data — 接收来自"autoRun 梦幻"脚本的数据（跨 App 数据交换）
+        if p == "/api/game-data" && req.method == "POST" {
+            return handleGameDataPOST(req)
+        }
         // WebDAV / 文件操作
         let filePath = (docRoot as NSString).appendingPathComponent(p)
 
@@ -484,6 +488,23 @@ class TrollHTTPServer {
             return .internalError()
         }
         return .ok(json, contentType: "application/json")
+    }
+
+    // MARK: - API 处理器（跨 App 数据交换）
+
+    /// POST /api/game-data — 接收来自 autoRun 脚本的数据，写入 TrollServer 的 docRoot
+    private func handleGameDataPOST(_ req: HTTPRequest) -> HTTPResponse {
+        let filePath = (docRoot as NSString).appendingPathComponent("data.txt")
+        let dir = (filePath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        do {
+            try req.body.write(to: URL(fileURLWithPath: filePath))
+            print("[HTTP] 📤 POST /api/game-data → \(filePath) (\(req.body.count) bytes)")
+            return .ok("ok".data(using: .utf8)!)
+        } catch {
+            print("[HTTP] ❌ game-data 写入失败: \(error)")
+            return .internalError()
+        }
     }
 
     // MARK: - 文件操作
