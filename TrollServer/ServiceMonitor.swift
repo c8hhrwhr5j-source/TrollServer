@@ -1,31 +1,42 @@
 import Foundation
-import Network
+import Darwin
+#if !DAEMON_MODE
+import UIKit
+#endif
 
 // ============================================================
-//  ServiceMonitor - 10 秒自检 + 自动重启看门狗
+//  ServiceMonitor v3.1 - 强化看门狗（后台可靠 + 防误报 + 静音音频联动）
 //
-//  每 10 秒执行三重检查：
-//  1. 端口 51111 是否在监听？(TCP dial)
-//  2. 服务对象是否还在运行？
-//  3. /api/heartbeat 返回是否正常？
-//
-//  任意一项失败 → 立即重启服务（≤2 秒恢复）
+//  特点：
+//  - 使用专用 Thread 替代 DispatchSource timer（后台可靠）
+//  - 每次检查 beginBackgroundTask 通过主线程调用
+//  - 至少 2 次连续失败才触发重启（防止后台临时超时误报）
+//  - 端口检查超时缩短至 500ms（本地回环）
+//  - 渐进式检查间隔：正常 5s → 异常时递增
+//  - 联动静音音频：超 8 次失败则尝试重启音频保活
+//  - 公开状态回调给 ViewController 更新 UI
 // ============================================================
 
 class ServiceMonitor {
 
     static let shared = ServiceMonitor()
 
-    private let checkInterval: TimeInterval = 10.0
-    private var timer: DispatchSourceTimer?
-    private let queue = DispatchQueue(label: "com.troll.monitor", qos: .background)
+    // ===================== 公开状态 =====================
+    private(set) var statusDetail: String = "初始化中..."
+    private(set) var restartCount: Int = 0
+    private(set) var lastRestartTime: Date?
+    private(set) var lastRestartReason: String = ""
+
+    // 状态变更回调（供 UI 更新）
+    var onStatusChanged: (() -> Void)?
+
+    // ===================== 内部 =====================
     private weak var server: TrollHTTPServer?
     private var isRunning = false
     private let lock = NSLock()
-
-    // 连续失败计数（防止误报）
+    private var monitorThread: Thread?
+    private var checkInterval: TimeInterval = 5.0
     private var consecutiveFailures = 0
-    private let maxConsecutiveFailures = 2
 
     // ===================== 启动 / 停止 =====================
 
@@ -36,16 +47,49 @@ class ServiceMonitor {
         guard !isRunning else { return }
         self.server = server
         isRunning = true
+        checkInterval = 5.0
+        consecutiveFailures = 0
+        statusDetail = "看门狗就绪"
 
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 5, repeating: checkInterval)
-        t.setEventHandler { [weak self] in
-            self?.performCheck()
+        // 使用专用 Thread + while 循环（后台比 DispatchSource timer 更可靠）
+        let thread = Thread { [weak self] in
+            while let self = self, self.isRunning {
+                autoreleasepool {
+                    // v3.1: beginBackgroundTask 通过主线程调用
+                    #if !DAEMON_MODE
+                    let semaphore = DispatchSemaphore(value: 0)
+                    var checkTask: UIBackgroundTaskIdentifier = .invalid
+                    DispatchQueue.main.async {
+                        checkTask = UIApplication.shared.beginBackgroundTask(withName: "MonitorCheck") {
+                            if checkTask != .invalid {
+                                UIApplication.shared.endBackgroundTask(checkTask)
+                            }
+                        }
+                        semaphore.signal()
+                    }
+                    _ = semaphore.wait(timeout: .now() + 2.0)
+                    #endif
+
+                    self.performCheck()
+
+                    #if !DAEMON_MODE
+                    if checkTask != .invalid {
+                        DispatchQueue.main.async {
+                            UIApplication.shared.endBackgroundTask(checkTask)
+                        }
+                    }
+                    #endif
+                }
+                Thread.sleep(forTimeInterval: self.checkInterval)
+            }
         }
-        t.resume()
-        timer = t
+        thread.name = "com.troll.monitor"
+        thread.qualityOfService = .background
+        thread.start()
+        monitorThread = thread
 
-        print("[Monitor] 👁️ 看门狗已启动（每 \(Int(checkInterval))s 自检）")
+        notifyStatus("👁️ 看门狗已启动（每 \(Int(checkInterval))s 自检）")
+        print("[Monitor] 👁️ 看门狗 v3.0 已启动（Thread 模式，后台可靠）")
     }
 
     func stop() {
@@ -53,15 +97,24 @@ class ServiceMonitor {
         defer { lock.unlock() }
         guard isRunning else { return }
         isRunning = false
-        timer?.cancel()
-        timer = nil
+        monitorThread?.cancel()
+        monitorThread = nil
+        notifyStatus("🛑 看门狗已停止")
         print("[Monitor] 🛑 看门狗已停止")
     }
 
-    // ===================== 立即自愈 =====================
     func healNow() {
-        queue.async { [weak self] in
+        DispatchQueue.global().async { [weak self] in
             self?.performCheck()
+        }
+    }
+
+    // ===================== 状态通知 =====================
+
+    private func notifyStatus(_ msg: String) {
+        statusDetail = msg
+        DispatchQueue.main.async { [weak self] in
+            self?.onStatusChanged?()
         }
     }
 
@@ -71,119 +124,121 @@ class ServiceMonitor {
         guard isRunning else { return }
 
         let port: UInt16 = 51111
+        let serverRunning = server?.isRunning == true
 
-        // 检查 1: 服务器状态
-        let serverAlive = server?.isRunning == true
-
-        // 检查 2: 端口是否在监听
-        let portAlive = checkPort(port)
-
-        // 检查 3: 心跳接口
-        let heartbeatOK = checkHeartbeat(port)
-
-        let allOK = serverAlive && portAlive && heartbeatOK
-
-        if allOK {
-            consecutiveFailures = 0
-            print("[Monitor] 🟢 所有检查通过 (port: \(portAlive), heartbeat: \(heartbeatOK))")
-            return
+        // 先快速检查 server.isRunning（零开销）
+        if serverRunning {
+            // 再做端口确认
+            let portAlive = checkPortFast(port)
+            if portAlive {
+                // 一切正常
+                consecutiveFailures = 0
+                checkInterval = 5.0
+                notifyStatus("🟢 服务正常（端口 OK）")
+                return
+            }
+            // 端口不通但 server.isRunning = true
+            print("[Monitor] ⚠️ server.isRunning=true 但端口不通 (#\(consecutiveFailures+1))")
+        } else {
+            print("[Monitor] ⚠️ server.isRunning=false (#\(consecutiveFailures+1))")
         }
 
         consecutiveFailures += 1
-        print("[Monitor] 🔴 检查失败 #\(consecutiveFailures) (server: \(serverAlive), port: \(portAlive), heartbeat: \(heartbeatOK))")
+        print("[Monitor] 🔴 检查失败 #\(consecutiveFailures) (server: \(serverRunning))")
 
-        // 连续失败 N 次才触发重启（防止误报）
-        guard consecutiveFailures >= maxConsecutiveFailures else { return }
+        // v3.1: 至少 2 次连续失败才重启，避免后台临时超时误判
+        let didRestart: Bool
+        if consecutiveFailures >= 2 {
+            restartServer(reason: "连续\(consecutiveFailures)次失败 server.run=\(serverRunning)")
+            didRestart = true
+        } else {
+            notifyStatus("⚠️ 首次失败，等待下次确认 (\(consecutiveFailures)/2)")
+            didRestart = false
+        }
 
-        print("[Monitor] 🔄 触发自动重启...")
-        restartServer()
+        // 渐进式延长间隔（如果 restartServer 已重置则沿用其值）
+        if !didRestart || server?.isRunning != true {
+            checkInterval = min(2.0 * Double(consecutiveFailures), 30.0)
+        }
+
+        // 超过 8 次连续失败：尝试重启静音音频
+        if consecutiveFailures >= 8 {
+            #if !DAEMON_MODE
+            print("[Monitor] 🆘 连续 \(consecutiveFailures) 次失败，尝试重启静音音频...")
+            SilentAudioPlayer.shared.stop()
+            Thread.sleep(forTimeInterval: 1)
+            SilentAudioPlayer.shared.start()
+            #endif
+        }
     }
 
-    // ===================== 端口检查 =====================
+    // ===================== 快速端口检查（BSD socket） =====================
 
-    private func checkPort(_ port: UInt16) -> Bool {
-        let conn = NWConnection(
-            host: NWEndpoint.Host("127.0.0.1"),
-            port: NWEndpoint.Port(rawValue: port)!,
-            using: .tcp
-        )
-        let sem = DispatchSemaphore(value: 0)
-        var result = false
+    private func checkPortFast(_ port: UInt16) -> Bool {
+        let sock = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { Darwin.close(sock) }
 
-        conn.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                result = true
-                conn.cancel()
-            case .failed, .cancelled:
-                if !result { sem.signal() }
-            default:
-                break
+        // 设置非阻塞
+        var flags = fcntl(sock, F_GETFL, 0)
+        _ = fcntl(sock, F_SETFL, flags | O_NONBLOCK)
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+        let result = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                Darwin.connect(sock, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        conn.start(queue: queue)
-        _ = sem.wait(timeout: .now() + 2.0)
 
-        if !result {
-            conn.cancel()
+        if result == 0 {
+            // 连接成功 → 端口活着，立即关闭
+            return true
         }
-        return result
-    }
 
-    // ===================== 心跳检查 =====================
-
-    private func checkHeartbeat(_ port: UInt16) -> Bool {
-        let conn = NWConnection(
-            host: NWEndpoint.Host("127.0.0.1"),
-            port: NWEndpoint.Port(rawValue: port)!,
-            using: .tcp
-        )
-        let sem = DispatchSemaphore(value: 0)
-        var result = false
-
-        conn.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                let request = "GET /api/heartbeat HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-                conn.send(content: request.data(using: .utf8)!, completion: .contentProcessed { _ in
-                    conn.receive(minimumIncompleteLength: 1, maximumLength: 1024) { data, _, _, _ in
-                        if let d = data, let str = String(data: d, encoding: .utf8), str.contains("ok") {
-                            result = true
-                        }
-                        conn.cancel()
-                        sem.signal()
-                    }
-                })
-            case .failed, .cancelled:
-                sem.signal()
-            default:
-                break
+        // 非阻塞 connect 返回 EINPROGRESS 是正常的
+        if errno == EINPROGRESS {
+            // poll 等待 500ms（本地回环，足够快）
+            var fds = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
+            let pollResult = Darwin.poll(&fds, 1, 500)
+            if pollResult > 0 && (fds.revents & Int16(POLLOUT)) != 0 {
+                var error: Int32 = 0
+                var errorLen = socklen_t(MemoryLayout<Int32>.size)
+                if getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &errorLen) == 0 && error == 0 {
+                    return true
+                }
             }
         }
-        conn.start(queue: queue)
-        _ = sem.wait(timeout: .now() + 3.0)
-        return result
+
+        return false
     }
 
     // ===================== 自动重启 =====================
 
-    private func restartServer() {
+    private func restartServer(reason: String) {
         let startTime = Date()
+        restartCount += 1
+        lastRestartReason = reason
+        lastRestartTime = Date()
 
-        // 1. 停止旧服务
-        server?.stop()
-        Thread.sleep(forTimeInterval: 0.5)
+        print("[Monitor] 🔄 自动重启 #\(restartCount): \(reason)")
 
-        // 2. 启动新服务
-        guard let s = server else { return }
-        let ok = s.start()
-        consecutiveFailures = 0
+        // 先用 restart()（优于 stop+start，有状态保护）
+        server?.restart()
 
         let elapsed = Date().timeIntervalSince(startTime)
-        if ok {
-            print("[Monitor] ✅ 服务重启成功（耗时 \(String(format: "%.1f", elapsed))s）")
+        let serverOK = server?.isRunning == true
+        if serverOK {
+            consecutiveFailures = 0
+            checkInterval = 5.0
+            notifyStatus("✅ 自动恢复 #\(restartCount)（耗时 \(String(format: "%.1f", elapsed))s）")
+            print("[Monitor] ✅ 自动恢复成功 #\(restartCount)")
         } else {
-            print("[Monitor] ❌ 服务重启失败（耗时 \(String(format: "%.1f", elapsed))s）")
+            notifyStatus("❌ 重启失败 #\(restartCount)（\(String(format: "%.1f", elapsed))s）")
+            print("[Monitor] ❌ 重启失败 #\(restartCount)，将继续尝试")
         }
     }
 }

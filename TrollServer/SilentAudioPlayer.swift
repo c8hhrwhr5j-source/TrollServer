@@ -21,6 +21,11 @@ final class SilentAudioPlayer: NSObject {
     private var player: AVAudioPlayer?
     private var isConfigured = false
 
+    /// 是否正在播放（供外部健康检查使用）
+    var isPlaying: Bool {
+        return isConfigured && (player?.isPlaying == true)
+    }
+
     private override init() {
         super.init()
     }

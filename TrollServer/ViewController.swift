@@ -9,6 +9,7 @@ class ViewController: UIViewController {
     // 状态标签
     private let serviceStatusLabel = UILabel()
     private let keepaliveLabel = UILabel()
+    private let monitorLabel = UILabel()
     private let statsLabel = UILabel()
     private let ipAddressLabel = UILabel()
     private let docRootLabel = UILabel()
@@ -41,13 +42,13 @@ class ViewController: UIViewController {
 
         // 标题
         let titleLabel = UILabel()
-        titleLabel.text = "TrollServer v2.0"
+        titleLabel.text = "TrollServer v3.1"
         titleLabel.font = UIFont.boldSystemFont(ofSize: 28)
         titleLabel.textAlignment = .center
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let subtitleLabel = UILabel()
-        subtitleLabel.text = "HTTP/WebDAV · 双保活 · 10s 自检 · 自动重启"
+        subtitleLabel.text = "HTTP/WebDAV · BSD Socket · 静音保活 · 智能自检"
         subtitleLabel.font = UIFont.systemFont(ofSize: 12)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.textAlignment = .center
@@ -64,6 +65,11 @@ class ViewController: UIViewController {
 
         keepaliveLabel.font = UIFont.systemFont(ofSize: 13)
         keepaliveLabel.textColor = .secondaryLabel
+        keepaliveLabel.numberOfLines = 0
+
+        monitorLabel.font = UIFont.systemFont(ofSize: 12)
+        monitorLabel.textColor = .secondaryLabel
+        monitorLabel.numberOfLines = 0
 
         statsLabel.font = UIFont.systemFont(ofSize: 13)
         statsLabel.textColor = .secondaryLabel
@@ -75,7 +81,7 @@ class ViewController: UIViewController {
         docRootLabel.textColor = .tertiaryLabel
 
         let stack = UIStackView(arrangedSubviews: [
-            serviceStatusLabel, keepaliveLabel, statsLabel,
+            serviceStatusLabel, keepaliveLabel, monitorLabel, statsLabel,
             ipAddressLabel, docRootLabel
         ])
         stack.axis = .vertical
@@ -142,9 +148,19 @@ class ViewController: UIViewController {
 
     // ===================== 状态更新 =====================
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // 注册看门狗状态回调
+        ServiceMonitor.shared.onStatusChanged = { [weak self] in
+            self?.updateStatus()
+        }
+    }
+
     @objc private func updateStatus() {
         let server = BootstrapServices.httpServer
         let running = server.isRunning
+        let monitor = ServiceMonitor.shared
+        let keepAlive = KeepAliveManager.shared
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -156,8 +172,13 @@ class ViewController: UIViewController {
                 icon: icon, title: "HTTP/WebDAV (51111)", detail: color, ok: running
             )
 
-            // 保活状态
-            self.keepaliveLabel.text = "🔋 保活: 后台任务 + 禁止休眠（零音频）"
+            // 保活状态（显示音频健康）
+            let audioOK = keepAlive.audioHealthy && SilentAudioPlayer.shared.isPlaying
+            let audioStatus = audioOK ? "✅音频" : "⚠️音频"
+            self.keepaliveLabel.text = "🔋 保活: 后台任务(15s) + \(audioStatus) + 禁止休眠"
+
+            // 看门狗状态
+            self.monitorLabel.text = "🩺 \(monitor.statusDetail) · 重启×\(monitor.restartCount)"
 
             // 统计
             let uptime = Int(-server.startTime.timeIntervalSinceNow)

@@ -1,5 +1,5 @@
 import Foundation
-import Network
+import Darwin
 
 // ============================================================
 //  UDPBroadcaster - iOS 端 UDP 广播发现
@@ -7,36 +7,53 @@ import Network
 //  每 5 秒发送一次广播到 255.255.255.255:51111
 //  消息格式: TROLL_DEVICE_ONLINE|ip:x.x.x.x|port:51111
 //  中控端被动监听，收到广播后自动添加设备
+//
+//  v3.1: 使用专用 Thread 替代 Timer，
+//  确保后台 runloop 挂起时广播继续发送
 // ============================================================
 
 final class UDPBroadcaster {
     static let shared = UDPBroadcaster()
 
-    private var timer: Timer?
+    private var broadcastThread: Thread?
     private var isRunning = false
     private let port: UInt16 = 51111
+    private let lock = NSLock()
 
     private init() {}
 
     func start() {
+        lock.lock()
+        defer { lock.unlock() }
         guard !isRunning else { return }
         isRunning = true
 
-        print("[UDP广播] 🚀 启动，每 5 秒广播一次")
+        print("[UDP广播] 🚀 启动，每 5 秒广播一次（Thread 模式）")
 
         // 立刻发送一次
         sendBroadcast()
 
-        // 每 5 秒发送一次
-        timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            self?.sendBroadcast()
+        // 专用线程循环发送，后台不中断
+        let thread = Thread { [weak self] in
+            while let self = self, self.isRunning {
+                autoreleasepool {
+                    self.sendBroadcast()
+                }
+                Thread.sleep(forTimeInterval: 5.0)
+            }
         }
+        thread.name = "com.troll.broadcast"
+        thread.qualityOfService = .background
+        thread.start()
+        broadcastThread = thread
     }
 
     func stop() {
+        lock.lock()
+        defer { lock.unlock() }
         isRunning = false
-        timer?.invalidate()
-        timer = nil
+        broadcastThread?.cancel()
+        broadcastThread = nil
         print("[UDP广播] 🛑 已停止")
     }
 

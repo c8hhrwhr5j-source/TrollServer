@@ -2,10 +2,29 @@ import Foundation
 #if !DAEMON_MODE
 import UIKit
 #endif
-import Network
+import Darwin
 
 // ============================================================
-//  TrollHTTPServer - 轻量 HTTP/WebDAV 服务器（纯 Swift，零依赖）
+//  TrollHTTPServer v3.1 - BSD 原生 socket 版
+//
+//  核心变更：用 BSD socket (socket/bind/listen/accept) 取代
+//  Network.framework 的 NWListener，从而根除后台断连问题。
+//
+//  NWListener 为何在后台断开：
+//    NWListener 是用户态 Network.framework 的高级抽象，
+//    依赖 dispatch queue 工作。iOS 进入后台时会挂起这些
+//    queue，导致端口立即不可达。
+//
+//  BSD socket 为何不会断开：
+//    socket()→bind()→listen() 后，端口由内核 TCP 栈直接
+//    管理。只要进程还活着（静音音频保活），内核就会响应
+//    TCP SYN 完成三次握手并排队等待 accept()。这是所有
+//    成熟 iOS WebDAV 应用（GCDWebServer 等）的方案。
+//
+//  v3.1 改进：
+//  - beginBackgroundTask 统一通过主线程调用（后台可靠性）
+//  - accept 线程 QoS 提升至 userInitiated
+//  - 进入后台不再强制重启监听器
 //
 //  端口: 51111
 //  端点:
@@ -21,19 +40,6 @@ import Network
 class TrollHTTPServer {
 
     // MARK: - 类型定义
-
-    /// 后台任务持有者：确保每个 HTTP 连接在后台不被 iOS 提前杀死
-    private class BgTaskHolder {
-        var id: UIBackgroundTaskIdentifier = .invalid
-        func end() {
-            guard id != .invalid else { return }
-            #if !DAEMON_MODE
-            UIApplication.shared.endBackgroundTask(id)
-            #endif
-            id = .invalid
-        }
-        deinit { end() }
-    }
 
     struct HTTPRequest {
         let method: String
@@ -72,23 +78,29 @@ class TrollHTTPServer {
     }
 
     // ===================== 常量 =====================
-    static let version = "TrollServer-v2.0"
-    static let readTimeout: TimeInterval = 30.0
+    static let version = "TrollServer-v3.1"
 
     // ===================== 状态 =====================
-    private var listener: NWListener?
     private let port: UInt16
     private let docRoot: String
-    private let queue = DispatchQueue(label: "com.troll.http", qos: .userInitiated)
+    private let handleQueue = DispatchQueue(label: "com.troll.http", qos: .userInitiated, attributes: .concurrent)
 
     private(set) var isRunning = false
     private let lock = NSLock()
+
+    // BSD socket
+    private var listenSock: Int32 = -1
+    private var acceptThread: Thread?
+    private var acceptShouldStop = false
 
     // 统计
     private(set) var requestCount: Int64 = 0
     private(set) var startTime: Date = Date()
 
     // ===================== 常量 =====================
+    private static let listenBacklog: Int32 = 128
+    private static let recvTimeoutSec: Int32 = 30
+    private static let sendTimeoutSec: Int32 = 30
     static let defaultDocRoot = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/Game")
 
     // ===================== 初始化 =====================
@@ -99,7 +111,7 @@ class TrollHTTPServer {
 
     // ===================== 启动 / 停止 / 重启 =====================
 
-    /// 在后台过渡时重新绑定监听器，确保端口在后台依然可连接
+    /// 重启服务器（保持端口连续，用于后台过渡或异常恢复）
     func restart() {
         lock.lock()
         guard isRunning else {
@@ -107,13 +119,16 @@ class TrollHTTPServer {
             _ = start()
             return
         }
-        print("[HTTP:\(port)] 🔄 重启监听器以适配后台模式...")
-        listener?.cancel()
-        listener = nil
+        print("[HTTP:\(port)] 🔄 重启监听器...")
+        // 标记停止 accept 线程，关闭 socket
+        acceptShouldStop = true
+        let sock = listenSock
+        listenSock = -1
+        if sock >= 0 { Darwin.shutdown(sock, SHUT_RDWR); Darwin.close(sock) }
         isRunning = false
         lock.unlock()
 
-        // 等待旧监听器释放端口
+        // 等待旧线程退出
         Thread.sleep(forTimeInterval: 0.3)
 
         let ok = start()
@@ -126,44 +141,62 @@ class TrollHTTPServer {
 
         guard !isRunning else { return true }
 
-        do {
-            let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
-            // 关键：includePeerToPeer 告诉 iOS 此连接可能在后台保持活跃
-            params.includePeerToPeer = true
-            // 不限制接口类型：iOS 设备可能通过 Wi-Fi、热点、USB 等方式连接
-
-            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-            listener?.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    print("[HTTP:\(self?.port ?? 0)] ✅ 服务启动成功")
-                case .failed(let error):
-                    print("[HTTP:\(self?.port ?? 0)] ❌ 启动失败: \(error)")
-                    self?.lock.lock()
-                    self?.isRunning = false
-                    self?.lock.unlock()
-                case .cancelled:
-                    print("[HTTP:\(self?.port ?? 0)] 已停止")
-                default:
-                    break
-                }
-            }
-
-            listener?.newConnectionHandler = { [weak self] conn in
-                self?.handle(connection: conn)
-            }
-
-            listener?.start(queue: queue)
-            isRunning = true
-            startTime = Date()
-            print("[HTTP:\(port)] 🚀 服务器已启动，文档根目录: \(docRoot)")
-            try? FileManager.default.createDirectory(atPath: docRoot, withIntermediateDirectories: true)
-            return true
-        } catch {
-            print("[HTTP:\(port)] ❌ 无法启动: \(error)")
+        // 1. 创建 TCP socket
+        let sock = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else {
+            print("[HTTP:\(port)] ❌ socket() 失败: \(lastError())")
             return false
         }
+
+        // 2. SO_REUSEADDR — 允许快速重启（TIME_WAIT 后立即重用端口）
+        var opt: Int32 = 1
+        _ = Darwin.setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, socklen_t(MemoryLayout<Int32>.size))
+
+        // SO_NOSIGPIPE — 防止 SIGPIPE 信号杀死进程（macOS/iOS 特有）
+        _ = Darwin.setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &opt, socklen_t(MemoryLayout<Int32>.size))
+
+        // 3. 绑定地址 0.0.0.0:51111（所有接口：Wi-Fi、热点、USB）
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = INADDR_ANY
+
+        let bindResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                Darwin.bind(sock, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            print("[HTTP:\(port)] ❌ bind() 失败: \(lastError())")
+            Darwin.close(sock)
+            return false
+        }
+
+        // 4. 开始监听
+        guard Darwin.listen(sock, Self.listenBacklog) == 0 else {
+            print("[HTTP:\(port)] ❌ listen() 失败: \(lastError())")
+            Darwin.close(sock)
+            return false
+        }
+
+        listenSock = sock
+        isRunning = true
+        acceptShouldStop = false
+        startTime = Date()
+
+        print("[HTTP:\(port)] 🚀 BSD socket 服务器已启动 (fd=\(sock))")
+        try? FileManager.default.createDirectory(atPath: docRoot, withIntermediateDirectories: true)
+
+        // 5. 启动 accept 线程（阻塞 accept，由内核管理，后台不挂）
+        let thread = Thread { [weak self] in
+            self?.acceptLoop()
+        }
+        thread.name = "com.troll.accept"
+        thread.qualityOfService = .userInitiated
+        thread.start()
+        acceptThread = thread
+
+        return true
     }
 
     func stop() {
@@ -171,117 +204,161 @@ class TrollHTTPServer {
         defer { lock.unlock() }
 
         guard isRunning else { return }
-        listener?.cancel()
-        listener = nil
+        acceptShouldStop = true
         isRunning = false
+
+        // shutdown + close 会让阻塞中的 accept() 返回 -1，从而退出线程
+        let sock = listenSock
+        listenSock = -1
+        if sock >= 0 {
+            Darwin.shutdown(sock, SHUT_RDWR)
+            Darwin.close(sock)
+        }
+
         print("[HTTP:\(port)] 🛑 服务器已停止")
     }
 
-    // ===================== 连接处理 =====================
-    private func handle(connection: NWConnection) {
-        // 为每个连接申请后台任务，防止 iOS 在处理中途杀死连接
-        let bgHolder = BgTaskHolder()
-        #if !DAEMON_MODE
-        let taskName = "TrollHTTP_\(UUID().uuidString.prefix(8))"
-        bgHolder.id = UIApplication.shared.beginBackgroundTask(withName: taskName) {
-            bgHolder.end()
-        }
-        #endif
+    // ===================== Accept 循环（专用线程） =====================
 
-        connection.stateUpdateHandler = { [weak self, weak connection, weak bgHolder] state in
-            guard let self = self, let conn = connection else {
-                bgHolder?.end()
+    private func acceptLoop() {
+        while !acceptShouldStop {
+            let sock = listenSock
+            guard sock >= 0 else { break }
+
+            let clientFd = Darwin.accept(sock, nil, nil)
+            if clientFd < 0 {
+                if acceptShouldStop || listenSock < 0 { break }
+                // EINTR: 被信号打断，重试；其他错误短暂休眠后重试
+                if errno == EINTR { continue }
+                let err = lastError()
+                print("[HTTP:\(port)] ⚠️ accept() 错误: \(err)")
+                Thread.sleep(forTimeInterval: 0.1)
+                continue
+            }
+
+            // 交给串行队列处理（避免阻塞 accept）
+            handleClientFd(clientFd)
+        }
+        print("[HTTP:\(port)] accept 线程退出")
+    }
+
+    // ===================== 客户端处理 =====================
+
+    private func handleClientFd(_ fd: Int32) {
+        // 设置读写超时（防止僵尸连接长期占用 fd）
+        var timeout = timeval(tv_sec: Self.recvTimeoutSec, tv_usec: 0)
+        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        _ = Darwin.setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        // v3.1: beginBackgroundTask 需要在主线程调用
+        // 但 accept 工作在后台线程，所以通过 DispatchQueue.main 调度
+        #if !DAEMON_MODE
+        DispatchQueue.main.async {
+            var bgTask: UIBackgroundTaskIdentifier = .invalid
+            bgTask = UIApplication.shared.beginBackgroundTask(withName: "TrollHTTP_\(fd)") {
+                if bgTask != .invalid {
+                    UIApplication.shared.endBackgroundTask(bgTask)
+                    bgTask = .invalid
+                }
+            }
+
+            // 持有 bgTask 引用以免提前释放
+            // 在 handleQueue 操作完成后回到主线程结束任务
+            self.handleQueue.async { [weak self] in
+                defer {
+                    Darwin.close(fd)
+                    DispatchQueue.main.async {
+                        if bgTask != .invalid {
+                            UIApplication.shared.endBackgroundTask(bgTask)
+                        }
+                    }
+                }
+
+                guard let self = self else { return }
+
+                // 读取 HTTP 请求
+                guard let req = self.readHTTPRequest(from: fd) else {
+                    self.sendRaw(statusCode: 400, body: "Bad Request", to: fd)
+                    return
+                }
+
+                OSAtomicIncrement64(&self.requestCount)
+                let resp = self.route(req)
+
+                // 发送响应
+                self.sendRaw(
+                    statusCode: resp.statusCode,
+                    headers: resp.headers,
+                    bodyData: resp.body,
+                    to: fd
+                )
+            }
+        }
+        #else
+        handleQueue.async { [weak self] in
+            defer { Darwin.close(fd) }
+
+            guard let self = self else { return }
+
+            // 读取 HTTP 请求
+            guard let req = self.readHTTPRequest(from: fd) else {
+                self.sendRaw(statusCode: 400, body: "Bad Request", to: fd)
                 return
             }
-            switch state {
-            case .ready:
-                self.readRequest(from: conn)
-            case .failed, .cancelled:
-                // 连接结束时释放后台任务
-                bgHolder?.end()
-            default:
+
+            OSAtomicIncrement64(&self.requestCount)
+            let resp = self.route(req)
+
+            // 发送响应
+            self.sendRaw(
+                statusCode: resp.statusCode,
+                headers: resp.headers,
+                bodyData: resp.body,
+                to: fd
+            )
+        }
+        #endif
+    }
+
+    // ===================== BSD socket 读取 HTTP 请求 =====================
+
+    private func readHTTPRequest(from fd: Int32) -> HTTPRequest? {
+        var data = Data()
+        let bufSize = 65536
+        var buf = [UInt8](repeating: 0, count: bufSize)
+
+        while data.count < 65536 * 4 {  // 安全上限
+            let n = Darwin.recv(fd, &buf, bufSize, 0)
+            if n > 0 {
+                data.append(buf[0..<Int(n)])
+                if let req = Self.parseHTTP(data) {
+                    return req
+                }
+            } else if n == 0 {
+                // 连接关闭
+                break
+            } else {
+                // n < 0: 超时或错误
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    // 超时但可能已收到完整 header（无 Content-Length 的请求）
+                    if let req = Self.parseHTTP(data) { return req }
+                }
                 break
             }
         }
-        connection.start(queue: queue)
+        return nil
     }
 
-    // MARK: - 请求读取（带超时控制）
+    // ===================== BSD socket 发送响应 =====================
 
-    private func readRequest(from connection: NWConnection) {
-        var data = Data()
-        var timedOut = false
-        let timeoutLock = NSLock()
-        var timer: DispatchSourceTimer?
-
-        func startTimer() {
-            timeoutLock.lock(); defer { timeoutLock.unlock() }
-            timer?.cancel()
-            guard !timedOut else { return }
-            let t = DispatchSource.makeTimerSource(queue: queue)
-            t.schedule(deadline: .now() + Self.readTimeout)
-            t.setEventHandler { [weak connection] in
-                timeoutLock.lock(); defer { timeoutLock.unlock() }
-                guard !timedOut else { return }
-                timedOut = true
-                connection?.cancel()
-            }
-            t.resume()
-            timer = t
-        }
-
-        func cancelTimer() {
-            timeoutLock.lock(); defer { timeoutLock.unlock() }
-            timer?.cancel(); timer = nil
-        }
-
-        func recv() {
-            autoreleasepool {
-                timeoutLock.lock()
-                let done = timedOut
-                timeoutLock.unlock()
-                guard !done else { cancelTimer(); return }
-
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self, weak connection] chunk, _, isComplete, error in
-                    guard let self = self, let conn = connection else { cancelTimer(); return }
-
-                    if error != nil || (chunk == nil && isComplete) {
-                        cancelTimer()
-                        conn.cancel()
-                        return
-                    }
-                    if let d = chunk { data.append(d) }
-
-                    // 解析请求
-                    if let req = Self.parseHTTP(data) {
-                        cancelTimer()
-                        OSAtomicIncrement64(&self.requestCount)
-                        let resp = self.route(req)
-                        self.send(response: resp, on: conn)
-                    } else if data.count > 65536 * 4 {
-                        // 请求过大，直接拒绝
-                        cancelTimer()
-                        let resp = HTTPResponse(statusCode: 413, headers: [:], body: "Payload Too Large".data(using: .utf8)!)
-                        self.send(response: resp, on: conn)
-                    } else {
-                        startTimer()
-                        recv()
-                    }
-                }
-            }
-        }
-
-        startTimer()
-        recv()
-    }
-
-    // ===================== 响应发送 =====================
-    private func send(response: HTTPResponse, on connection: NWConnection) {
+    private func sendRaw(statusCode: Int, headers: [String: String] = [:], bodyData: Data, to fd: Int32) {
         let statusText: String = {
-            switch response.statusCode {
+            switch statusCode {
             case 200: return "OK"
             case 201: return "Created"
             case 204: return "No Content"
+            case 400: return "Bad Request"
+            case 403: return "Forbidden"
             case 404: return "Not Found"
             case 405: return "Method Not Allowed"
             case 413: return "Payload Too Large"
@@ -290,27 +367,30 @@ class TrollHTTPServer {
             }
         }()
 
-        var headerStr = "HTTP/1.1 \(response.statusCode) \(statusText)\r\n"
+        var headerStr = "HTTP/1.1 \(statusCode) \(statusText)\r\n"
         headerStr += "Server: \(Self.version)\r\n"
         headerStr += "Connection: close\r\n"
-        for (k, v) in response.headers {
+        for (k, v) in headers {
             headerStr += "\(k): \(v)\r\n"
         }
-        headerStr += "Content-Length: \(response.body.count)\r\n"
+        headerStr += "Content-Length: \(bodyData.count)\r\n"
         headerStr += "\r\n"
 
-        guard let headerData = headerStr.data(using: .utf8) else {
-            connection.cancel()
-            return
+        guard let headerData = headerStr.data(using: .utf8) else { return }
+
+        // 发送 header
+        _ = headerData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+            Darwin.send(fd, ptr.baseAddress, headerData.count, Int32(MSG_NOSIGNAL))
         }
-
-        var fullResponse = headerData
-        fullResponse.append(response.body)
-
-        connection.send(content: fullResponse, completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+        // 发送 body（如果非空）
+        if !bodyData.isEmpty {
+            _ = bodyData.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+                Darwin.send(fd, ptr.baseAddress, bodyData.count, Int32(MSG_NOSIGNAL))
+            }
+        }
     }
+
+
 
     // ===================== 路由分发 =====================
     private func route(_ req: HTTPRequest) -> HTTPResponse {
@@ -465,6 +545,11 @@ class TrollHTTPServer {
     }
 
     // MARK: - 辅助
+
+    /// 获取最后一次系统调用错误描述
+    private func lastError() -> String {
+        String(cString: strerror(errno))
+    }
 
     private func listDirectory(_ path: String) -> HTTPResponse {
         let fm = FileManager.default

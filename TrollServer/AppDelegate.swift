@@ -38,17 +38,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
-        print("[AppDelegate] 📴 进入后台")
+        print("[AppDelegate] 📴 进入后台（BSD socket 持续监听，无需重启）")
 
-        // 关键：进入后台时重启 HTTP 监听器，确保 NWListener 在后台上下文重新绑定
-        // iOS 会在前台→后台过渡时挂起前台绑定 TCP 监听器，
-        // 在后台重新绑定可让系统将其视为后台服务，保持端口活跃。
-        BootstrapServices.httpServer.restart()
-
-        // 延迟 1 秒再自检（等待重启完成）
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
-            ServiceMonitor.shared.healNow()
-        }
+        // v3.1: BSD socket 的 listen 端口由内核 TCP 栈管理，
+        // 进入后台不影响已绑定的端口。无需重启服务器，
+        // 仅做一次快速自检即可。
+        ServiceMonitor.shared.healNow()
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
