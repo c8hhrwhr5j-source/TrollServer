@@ -99,8 +99,8 @@ class TrollHTTPServer {
 
     // ===================== 常量 =====================
     private static let listenBacklog: Int32 = 128
-    private static let recvTimeoutSec: Int32 = 30
-    private static let sendTimeoutSec: Int32 = 30
+    private static let recvTimeoutSec: time_t = 30
+    private static let sendTimeoutSec: time_t = 30
     static let defaultDocRoot = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/Game")
 
     // ===================== 初始化 =====================
@@ -278,7 +278,7 @@ class TrollHTTPServer {
 
                 // 读取 HTTP 请求
                 guard let req = self.readHTTPRequest(from: fd) else {
-                    self.sendRaw(statusCode: 400, body: "Bad Request", to: fd)
+                    self.sendRaw(statusCode: 400, bodyData: "Bad Request".data(using: .utf8)!, to: fd)
                     return
                 }
 
@@ -302,7 +302,7 @@ class TrollHTTPServer {
 
             // 读取 HTTP 请求
             guard let req = self.readHTTPRequest(from: fd) else {
-                self.sendRaw(statusCode: 400, body: "Bad Request", to: fd)
+                self.sendRaw(statusCode: 400, bodyData: "Bad Request".data(using: .utf8)!, to: fd)
                 return
             }
 
