@@ -102,9 +102,8 @@ class TrollHTTPServer {
     private static let listenBacklog: Int32 = 128
     private static let recvTimeoutSec: time_t = 30
     private static let sendTimeoutSec: time_t = 30
-    // 使用 /var/mobile/Documents/Game/ 作为 TrollStore App 间共享目录
-    // "autoRun 梦幻" 脚本和 TrollServer 都读写此目录，无需跨 App HTTP 同步
-    static let defaultDocRoot = "/var/mobile/Documents/Game"
+    // TrollServer 使用自己的沙盒目录
+    static let defaultDocRoot = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/Game")
 
     // ===================== 初始化 =====================
     init(port: UInt16 = 51111, docRoot: String? = nil) {
