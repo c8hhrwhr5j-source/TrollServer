@@ -103,7 +103,7 @@ class TrollHTTPServer {
     private static let recvTimeoutSec: time_t = 30
     private static let sendTimeoutSec: time_t = 30
     // TrollServer 使用自己的沙盒目录
-    static let defaultDocRoot = "/var/mobile/Documents"
+    static let defaultDocRoot = "/var/mobile/Media/Downloads"
 
     // ===================== 初始化 =====================
     init(port: UInt16 = 51111, docRoot: String? = nil) {
