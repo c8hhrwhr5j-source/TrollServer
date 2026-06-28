@@ -101,7 +101,7 @@ class TrollHTTPServer {
     private static let recvTimeoutSec: time_t = 30
     private static let sendTimeoutSec: time_t = 30
     // TrollServer 使用自己的沙盒目录
-    static let defaultDocRoot = (NSHomeDirectory() as NSString).appendingPathComponent("Documents")
+    static let defaultDocRoot = "/var/mobile/Documents"
 
     // ===================== 初始化 =====================
     init(port: UInt16 = 51111, docRoot: String? = nil) {
@@ -185,7 +185,7 @@ class TrollHTTPServer {
         startTime = Date()
 
         print("[HTTP:\(port)] 🚀 BSD socket 服务器已启动 (fd=\(sock))")
-        try? FileManager.default.createDirectory(atPath: docRoot, withIntermediateDirectories: true)
+        _ = CFile.mkdir(docRoot)
 
         // 5. 启动 accept 线程（阻塞 accept，由内核管理，后台不挂）
         let thread = Thread { [weak self] in
@@ -518,66 +518,41 @@ class TrollHTTPServer {
     // MARK: - 文件操作
 
     private func handleGET(_ path: String) -> HTTPResponse {
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir) else {
-            return .notFound()
-        }
-        if isDir.boolValue {
-            // 目录 → 返回 HTML 列表
+        let (exists, isDir) = CFile.exists(path)
+        guard exists else { return .notFound() }
+        if isDir {
             return listDirectory(path)
         }
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
-            return .internalError()
-        }
+        guard let data = CFile.read(path) else { return .internalError() }
         let mime = mimeType(for: path)
         return .ok(data, contentType: mime)
     }
 
     private func handlePUT(_ path: String, body: Data) -> HTTPResponse {
         let dir = (path as NSString).deletingLastPathComponent
-        do {
-            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        } catch {
-            print("[HTTP] ❌ 创建目录失败 \(dir): \(error)")
-        }
-        do {
-            try body.write(to: URL(fileURLWithPath: path))
+        _ = CFile.mkdir(dir)
+        if CFile.write(path, data: body) {
             print("[HTTP] 📤 PUT \(path) (\(body.count) bytes)")
             return .created()
-        } catch {
-            print("[HTTP] ❌ 写入失败 \(path): \(error)")
-            return .internalError()
         }
+        print("[HTTP] ❌ 写入失败 \(path): \(String(cString: strerror(errno)))")
+        return .internalError()
     }
 
     private func handleMKCOL(_ path: String) -> HTTPResponse {
-        do {
-            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
-            return .created()
-        } catch {
-            return .internalError()
-        }
+        if CFile.mkdir(path) { return .created() }
+        return .internalError()
     }
 
     private func handleDELETE(_ path: String) -> HTTPResponse {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: path) else { return .notFound() }
-        do {
-            try fm.removeItem(atPath: path)
-            return .noContent()
-        } catch {
-            return .internalError()
-        }
+        guard CFile.exists(path).exists else { return .notFound() }
+        if CFile.remove(path) { return .noContent() }
+        return .internalError()
     }
 
     private func handlePROPFIND(_ path: String) -> HTTPResponse {
-        // 简单实现：返回目录下的文件列表
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
-            return listDirectory("")
-        }
+        let (exists, isDir) = CFile.exists(path)
+        guard exists, isDir else { return listDirectory("") }
         return listDirectory(path)
     }
 
@@ -716,10 +691,7 @@ class TrollHTTPServer {
     }
 
     private func listDirectory(_ path: String) -> HTTPResponse {
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(atPath: path) else {
-            return .internalError()
-        }
+        guard let files = CFile.list(path) else { return .internalError() }
         var html = "<html><head><meta charset='utf-8'><title>\(path)</title></head><body>"
         html += "<h2>📁 \(path)</h2><ul>"
         if path != "" && path != "/" {
@@ -728,9 +700,8 @@ class TrollHTTPServer {
         }
         for f in files.sorted() {
             let full = (path as NSString).appendingPathComponent(f)
-            var isDir: ObjCBool = false
-            fm.fileExists(atPath: full, isDirectory: &isDir)
-            let icon = isDir.boolValue ? "📁" : "📄"
+            let (_, isDir) = CFile.exists(full)
+            let icon = isDir ? "📁" : "📄"
             let url = path == "/" ? "/\(f)" : "\(path)/\(f)"
             html += "<li>\(icon) <a href='\(url)'>\(f)</a></li>"
         }
@@ -812,5 +783,116 @@ class TrollHTTPServer {
 
         // body 未收齐
         return nil
+    }
+
+    // MARK: - 底层 C 文件操作（绕过沙盒重定向）
+
+    /// Darwin C 文件操作包装 —— 直接操作绝对路径，绕过 iOS 沙盒重定向
+    /// FileManager / Data(contentsOf:) / write(to:) 等高层 API 会被沙盒强制重定向至容器内，
+    /// 必须使用原生 C 接口（open/write/read/mkdir/unlink/stat/opendir）才能读写沙盒外的绝对路径。
+    private struct CFile {
+
+        /// 检查文件/目录是否存在及是否为目录（stat）
+        static func exists(_ path: String) -> (exists: Bool, isDir: Bool) {
+            var st = stat()
+            guard path.withCString({ stat($0, &st) }) == 0 else {
+                return (false, false)
+            }
+            return (true, (st.st_mode & S_IFMT) == S_IFDIR)
+        }
+
+        /// 读取文件全部内容（open + read）
+        static func read(_ path: String) -> Data? {
+            let fd = path.withCString { Darwin.open($0, O_RDONLY) }
+            guard fd >= 0 else { return nil }
+            defer { Darwin.close(fd) }
+
+            var st = stat()
+            guard fstat(fd, &st) == 0 else { return nil }
+            let size = Int(st.st_size)
+            guard size > 0 else { return Data() }
+
+            var data = Data(count: size)
+            let n = data.withUnsafeMutableBytes { ptr in
+                Darwin.read(fd, ptr.baseAddress, size)
+            }
+            guard n == size else { return nil }
+            return data
+        }
+
+        /// 写入文件——覆盖或创建（open + write）
+        static func write(_ path: String, data: Data) -> Bool {
+            let fd = path.withCString { Darwin.open($0, O_WRONLY | O_CREAT | O_TRUNC, 0o644) }
+            guard fd >= 0 else { return false }
+            defer { Darwin.close(fd) }
+
+            let n = data.withUnsafeBytes { ptr in
+                Darwin.write(fd, ptr.baseAddress, data.count)
+            }
+            return n == data.count
+        }
+
+        /// 创建目录——支持递归创建中间目录（mkdir）
+        static func mkdir(_ path: String, intermediates: Bool = true) -> Bool {
+            if intermediates {
+                var cur = ""
+                for part in (path as NSString).pathComponents {
+                    if part == "/" || part.isEmpty {
+                        cur = "/"
+                        continue
+                    }
+                    cur = (cur as NSString).appendingPathComponent(part)
+                    let (ex, isDir) = exists(cur)
+                    if !ex {
+                        guard cur.withCString({ Darwin.mkdir($0, 0o755) }) == 0 else { return false }
+                    } else if !isDir {
+                        return false // 路径中间同名文件
+                    }
+                }
+                return true
+            }
+            return path.withCString({ Darwin.mkdir($0, 0o755) }) == 0
+        }
+
+        /// 删除文件或目录——递归删除子内容（unlink / rmdir）
+        static func remove(_ path: String) -> Bool {
+            let (ex, isDir) = exists(path)
+            guard ex else { return false }
+            if isDir {
+                if let children = list(path) {
+                    for child in children {
+                        _ = remove((path as NSString).appendingPathComponent(child))
+                    }
+                }
+                return path.withCString { Darwin.rmdir($0) } == 0
+            }
+            return path.withCString { Darwin.unlink($0) } == 0
+        }
+
+        /// 列出目录内容（opendir / readdir）
+        static func list(_ path: String) -> [String]? {
+            guard let dp = Darwin.opendir(path) else { return nil }
+            defer { Darwin.closedir(dp) }
+            var files: [String] = []
+            while let entry = Darwin.readdir(dp) {
+                var nameBuf = entry.pointee.d_name
+                let name = withUnsafePointer(to: &nameBuf) { ptr in
+                    ptr.withMemoryRebound(to: CChar.self, capacity: 256) {
+                        String(cString: $0)
+                    }
+                }
+                if name != "." && name != ".." {
+                    files.append(name)
+                }
+            }
+            return files
+        }
+
+        /// 获取文件大小（stat）
+        static func size(_ path: String) -> Int64? {
+            var st = stat()
+            guard path.withCString({ stat($0, &st) }) == 0 else { return nil }
+            return st.st_size
+        }
     }
 }
