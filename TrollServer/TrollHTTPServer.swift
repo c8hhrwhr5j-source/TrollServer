@@ -103,7 +103,7 @@ class TrollHTTPServer {
     private static let recvTimeoutSec: time_t = 30
     private static let sendTimeoutSec: time_t = 30
     // TrollServer 使用自己的沙盒目录
-    static let defaultDocRoot = "/var/mobile/Media/Downloads"
+    static let defaultDocRoot = "/var/mobile/Downloads"
 
     // ===================== 初始化 =====================
     init(port: UInt16 = 51111, docRoot: String? = nil) {
@@ -545,13 +545,17 @@ class TrollHTTPServer {
 
     private func handlePUT(_ path: String, body: Data) -> HTTPResponse {
         let dir = (path as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        } catch {
+            print("[HTTP] ❌ 创建目录失败 \(dir): \(error)")
+        }
         do {
             try body.write(to: URL(fileURLWithPath: path))
             print("[HTTP] 📤 PUT \(path) (\(body.count) bytes)")
             return .created()
         } catch {
-            print("[HTTP] ❌ PUT 失败: \(error)")
+            print("[HTTP] ❌ 写入失败 \(path): \(error)")
             return .internalError()
         }
     }
