@@ -218,7 +218,6 @@ if [ "$BUILD_TARGET" = "daemon" ] || [ "$BUILD_TARGET" = "all" ]; then
         ${DAEMON_SWIFT_FILES[@]} \
         $SWIFT_FLAGS \
         -framework Foundation \
-        -framework Network \
         -Xlinker -dead_strip \
         -Xlinker -sdk_version -Xlinker $SDK_VERSION \
         -o "$OUTPUT_DAEMON"
@@ -414,7 +413,6 @@ swiftc \
     $SWIFT_FLAGS \
     -framework UIKit \
     -framework Foundation \
-    -framework Network \
     -framework AVFoundation \
     -Xlinker -rpath -Xlinker /usr/lib/swift \
     -Xlinker -sdk_version -Xlinker $SDK_VERSION \
