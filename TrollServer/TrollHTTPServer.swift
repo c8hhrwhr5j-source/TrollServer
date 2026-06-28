@@ -22,6 +22,19 @@ class TrollHTTPServer {
 
     // MARK: - 类型定义
 
+    /// 后台任务持有者：确保每个 HTTP 连接在后台不被 iOS 提前杀死
+    private class BgTaskHolder {
+        var id: UIBackgroundTaskIdentifier = .invalid
+        func end() {
+            guard id != .invalid else { return }
+            #if !DAEMON_MODE
+            UIApplication.shared.endBackgroundTask(id)
+            #endif
+            id = .invalid
+        }
+        deinit { end() }
+    }
+
     struct HTTPRequest {
         let method: String
         let path: String
@@ -84,7 +97,29 @@ class TrollHTTPServer {
         self.docRoot = docRoot ?? Self.defaultDocRoot
     }
 
-    // ===================== 启动 / 停止 =====================
+    // ===================== 启动 / 停止 / 重启 =====================
+
+    /// 在后台过渡时重新绑定监听器，确保端口在后台依然可连接
+    func restart() {
+        lock.lock()
+        guard isRunning else {
+            lock.unlock()
+            _ = start()
+            return
+        }
+        print("[HTTP:\(port)] 🔄 重启监听器以适配后台模式...")
+        listener?.cancel()
+        listener = nil
+        isRunning = false
+        lock.unlock()
+
+        // 等待旧监听器释放端口
+        Thread.sleep(forTimeInterval: 0.3)
+
+        let ok = start()
+        print("[HTTP:\(port)] \(ok ? "✅" : "❌") 监听器重启\(ok ? "成功" : "失败")")
+    }
+
     func start() -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -94,6 +129,8 @@ class TrollHTTPServer {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
+            // 关键：includePeerToPeer 告诉 iOS 此连接可能在后台保持活跃
+            params.includePeerToPeer = true
             // 不限制接口类型：iOS 设备可能通过 Wi-Fi、热点、USB 等方式连接
 
             listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
@@ -142,13 +179,26 @@ class TrollHTTPServer {
 
     // ===================== 连接处理 =====================
     private func handle(connection: NWConnection) {
-        connection.stateUpdateHandler = { [weak self, weak connection] state in
-            guard let self = self, let conn = connection else { return }
+        // 为每个连接申请后台任务，防止 iOS 在处理中途杀死连接
+        let bgHolder = BgTaskHolder()
+        #if !DAEMON_MODE
+        let taskName = "TrollHTTP_\(UUID().uuidString.prefix(8))"
+        bgHolder.id = UIApplication.shared.beginBackgroundTask(withName: taskName) {
+            bgHolder.end()
+        }
+        #endif
+
+        connection.stateUpdateHandler = { [weak self, weak connection, weak bgHolder] state in
+            guard let self = self, let conn = connection else {
+                bgHolder?.end()
+                return
+            }
             switch state {
             case .ready:
                 self.readRequest(from: conn)
             case .failed, .cancelled:
-                break
+                // 连接结束时释放后台任务
+                bgHolder?.end()
             default:
                 break
             }

@@ -39,9 +39,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         print("[AppDelegate] 📴 进入后台")
-        // 保活已在 BootstrapServices 中启动，此处不需额外操作
-        // 自检一次确保服务正常
-        ServiceMonitor.shared.healNow()
+
+        // 关键：进入后台时重启 HTTP 监听器，确保 NWListener 在后台上下文重新绑定
+        // iOS 会在前台→后台过渡时挂起前台绑定 TCP 监听器，
+        // 在后台重新绑定可让系统将其视为后台服务，保持端口活跃。
+        BootstrapServices.httpServer.restart()
+
+        // 延迟 1 秒再自检（等待重启完成）
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+            ServiceMonitor.shared.healNow()
+        }
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
