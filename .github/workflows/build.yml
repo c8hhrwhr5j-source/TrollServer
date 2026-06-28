@@ -75,14 +75,17 @@ jobs:
 
           echo "编译完成: $BUILD_DIR/$APP_NAME"
 
-      - name: 嵌入 entitlements
+      - name: 安装 ldid
+        run: brew install ldid
+
+      - name: 注入逃逸权限 (ldid)
         run: |
           ENTITLEMENTS="TrollServer/TrollServer.entitlements"
           APP_BIN="build/TrollServer"
           if [ -f "$ENTITLEMENTS" ]; then
-            # TrollStore 会在安装时使用其自身的签名重签, 这里仅做占位签名
-            codesign --entitlements "$ENTITLEMENTS" -f -s - "$APP_BIN" || true
-            echo "entitlements 嵌入完成"
+            # 必须用 ldid 注入私有 entitlements（codesign 会剥离 no-sandbox/no-container）
+            ldid -S"$ENTITLEMENTS" "$APP_BIN"
+            echo "ldid 逃逸权限注入完成"
           else
             echo "[WARNING] 未找到 entitlements 文件, 跳过"
           fi
