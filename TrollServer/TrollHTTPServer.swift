@@ -75,10 +75,13 @@ class TrollHTTPServer {
     private(set) var requestCount: Int64 = 0
     private(set) var startTime: Date = Date()
 
+    // ===================== 常量 =====================
+    static let defaultDocRoot = "/private/var/mobile/Library/TrollStore/Game"
+
     // ===================== 初始化 =====================
     init(port: UInt16 = 51111, docRoot: String? = nil) {
         self.port = port
-        self.docRoot = docRoot ?? (NSHomeDirectory() as NSString).appendingPathComponent("Documents")
+        self.docRoot = docRoot ?? Self.defaultDocRoot
     }
 
     // ===================== 启动 / 停止 =====================

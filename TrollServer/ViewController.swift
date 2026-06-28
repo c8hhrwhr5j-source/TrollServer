@@ -171,7 +171,7 @@ class ViewController: UIViewController {
             }
 
             // 文档根目录
-            let doc = NSHomeDirectory() + "/Documents"
+            let doc = TrollHTTPServer.defaultDocRoot
             self.docRootLabel.text = "📂 \(doc)"
         }
     }
