@@ -329,26 +329,63 @@ class TrollHTTPServer {
         let bufSize = 65536
         var buf = [UInt8](repeating: 0, count: bufSize)
 
-        while data.count < 65536 * 4 {  // 安全上限
+        // 阶段 1：读取 HTTP header（找 \r\n\r\n）
+        var headerParsed = false
+        var contentLength: Int = 0
+        let maxHeader = 65536  // header 最大 64KB（防止恶意超大 header）
+
+        while data.count < maxHeader {
             let n = Darwin.recv(fd, &buf, bufSize, 0)
             if n > 0 {
                 data.append(contentsOf: buf[0..<Int(n)])
-                if let req = Self.parseHTTP(data) {
-                    return req
+                if let range = data.range(of: Data("\r\n\r\n".utf8)) {
+                    // header 收齐了，先解析获取 Content-Length
+                    let headerEnd = range.lowerBound
+                    let headerData = data.subdata(in: 0..<headerEnd)
+                    if let headerStr = String(data: headerData, encoding: .utf8) {
+                        for line in headerStr.components(separatedBy: "\r\n").dropFirst() {
+                            guard let colon = line.firstIndex(of: ":") else { continue }
+                            let key = String(line[..<colon]).trimmingCharacters(in: .whitespaces).lowercased()
+                            if key == "content-length", let len = Int(String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)) {
+                                contentLength = len
+                                break
+                            }
+                        }
+                        headerParsed = true
+                        break
+                    }
                 }
             } else if n == 0 {
-                // 连接关闭
                 break
             } else {
-                // n < 0: 超时或错误
-                if errno == EAGAIN || errno == EWOULDBLOCK {
-                    // 超时但可能已收到完整 header（无 Content-Length 的请求）
-                    if let req = Self.parseHTTP(data) { return req }
-                }
+                if errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 break
             }
         }
-        return nil
+
+        // 阶段 2：按 Content-Length 读取 body（上限 800MB，防止恶意超大文件）
+        if headerParsed && contentLength > 0 {
+            let maxBody = 800 * 1024 * 1024  // 800MB
+            let safeLen = min(contentLength, maxBody)
+            let bodyStart = data.range(of: Data("\r\n\r\n".utf8))!.upperBound
+            let targetCount = bodyStart + safeLen
+
+            while data.count < targetCount {
+                let n = Darwin.recv(fd, &buf, bufSize, 0)
+                if n > 0 {
+                    data.append(contentsOf: buf[0..<Int(n)])
+                } else if n == 0 {
+                    break
+                } else {
+                    if errno == EAGAIN || errno == EWOULDBLOCK {
+                        if let req = Self.parseHTTP(data) { return req }
+                    }
+                    break
+                }
+            }
+        }
+
+        return Self.parseHTTP(data)
     }
 
     // ===================== BSD socket 发送响应 =====================
