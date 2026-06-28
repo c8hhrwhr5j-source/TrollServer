@@ -67,7 +67,6 @@ jobs:
             -whole-module-optimization \
             -framework UIKit \
             -framework Foundation \
-            -framework Network \
             -framework AVFoundation \
             -Xlinker -rpath -Xlinker /usr/lib/swift \
             -Xlinker -sdk_version -Xlinker "$SDK_VER" \
