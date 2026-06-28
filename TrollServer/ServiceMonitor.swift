@@ -1,8 +1,6 @@
 import Foundation
 import Darwin
-#if !DAEMON_MODE
 import UIKit
-#endif
 
 // ============================================================
 //  ServiceMonitor v3.1 - 强化看门狗（后台可靠 + 防误报 + 静音音频联动）

@@ -1,7 +1,5 @@
 import Foundation
-#if !DAEMON_MODE
 import UIKit
-#endif
 import Darwin
 
 // ============================================================
@@ -477,19 +475,12 @@ class TrollHTTPServer {
     // MARK: - API 处理器
 
     private func deviceInfo() -> HTTPResponse {
-        #if !DAEMON_MODE
         UIDevice.current.isBatteryMonitoringEnabled = true
         let battLevel = UIDevice.current.batteryLevel
         let batt: Int = battLevel >= 0 ? Int(battLevel * 100) : -1
         let deviceName = UIDevice.current.name
         let deviceModel = UIDevice.current.model
         let systemVer  = UIDevice.current.systemVersion
-        #else
-        let batt: Int = -1
-        let deviceName = ProcessInfo.processInfo.hostName
-        let deviceModel = "iPhone"
-        let systemVer  = ProcessInfo.processInfo.operatingSystemVersionString
-        #endif
 
         // 获取设备 UUID（首次生成后持久化，重启不变）
         let uuidPath = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/.device_uuid")
