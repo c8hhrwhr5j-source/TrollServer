@@ -88,7 +88,7 @@ final class SilentAudioPlayer: NSObject {
         let bitsPerSample: Int16 = 16
 
         let numSamples = sampleRate * duration
-        let dataSize = Int32(numSamples) * Int32(numChannels) * Int32(bitsPerSample / 8)
+        var dataSize = Int32(numSamples) * Int32(numChannels) * Int32(bitsPerSample / 8)
 
         // WAV 文件头（44 字节）
         var header = Data()
