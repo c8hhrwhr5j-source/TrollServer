@@ -309,6 +309,22 @@ class ViewController: UIViewController {
 
     // ===================== 脚本控制操作 =====================
 
+    private enum ScriptCommand: String {
+        case start  = "start"
+        case stop   = "stop"
+        case pause  = "pause"
+        case resume = "resume"
+
+        var displayName: String {
+            switch self {
+            case .start:  return "启动"
+            case .stop:   return "停止"
+            case .pause:  return "暂停"
+            case .resume: return "恢复"
+            }
+        }
+    }
+
     @objc private func scriptStart() {
         sendScriptCommand(.start)
     }
@@ -325,18 +341,54 @@ class ViewController: UIViewController {
         sendScriptCommand(.resume)
     }
 
-    private func sendScriptCommand(_ cmd: ShellScriptManager.Command) {
+    private func sendScriptCommand(_ cmd: ScriptCommand) {
         // 禁用所有按钮，防止重复点击
         setScriptButtonsEnabled(false)
         scriptStatusLabel.text = "⏳ 正在发送 \(cmd.displayName) 命令..."
         scriptStatusLabel.textColor = .secondaryLabel
 
-        ShellScriptManager.shared.send(cmd) { [weak self] result in
-            guard let self = self else { return }
+        let urlString = "http://127.0.0.1:8989/task?cmd=\(cmd.rawValue)"
+        guard let url = URL(string: urlString) else {
+            self.scriptStatusLabel.text = "URL 无效: \(urlString)"
+            self.scriptStatusLabel.textColor = .systemRed
             self.setScriptButtonsEnabled(true)
-            self.scriptStatusLabel.text = result.message
-            self.scriptStatusLabel.textColor = result.success ? .systemGreen : .systemRed
+            return
         }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        print("[Script] 📤 发送命令: \(cmd.displayName) → \(urlString)")
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                let msg = "\(cmd.displayName) 失败: \(error.localizedDescription)"
+                print("[Script] ❌ \(msg)")
+                DispatchQueue.main.async {
+                    self.setScriptButtonsEnabled(true)
+                    self.scriptStatusLabel.text = msg
+                    self.scriptStatusLabel.textColor = .systemRed
+                }
+                return
+            }
+
+            let httpResponse = response as? HTTPURLResponse
+            let statusCode = httpResponse?.statusCode ?? -1
+            let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let success = (200...299).contains(statusCode)
+            let msg = "\(success ? "✅" : "⚠️") \(cmd.displayName) - HTTP \(statusCode): \(body.prefix(200))"
+            print("[Script] \(msg)")
+
+            DispatchQueue.main.async {
+                self.setScriptButtonsEnabled(true)
+                self.scriptStatusLabel.text = msg
+                self.scriptStatusLabel.textColor = success ? .systemGreen : .systemRed
+            }
+        }
+        task.resume()
     }
 
     private func setScriptButtonsEnabled(_ enabled: Bool) {
