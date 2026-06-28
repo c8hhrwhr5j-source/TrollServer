@@ -180,7 +180,7 @@ class ServiceMonitor {
         defer { Darwin.close(sock) }
 
         // 设置非阻塞
-        var flags = fcntl(sock, F_GETFL, 0)
+        let flags = fcntl(sock, F_GETFL, 0)
         _ = fcntl(sock, F_SETFL, flags | O_NONBLOCK)
 
         var addr = sockaddr_in()
