@@ -84,8 +84,8 @@ final class SilentAudioPlayer: NSObject {
     private func generateSilentWAV() -> URL? {
         let sampleRate: Int32 = 8000
         let duration: Int32 = 5           // 5 秒
-        let numChannels: Int16 = 1
-        let bitsPerSample: Int16 = 16
+        var numChannels: Int16 = 1
+        var bitsPerSample: Int16 = 16
 
         let numSamples = sampleRate * duration
         var dataSize = Int32(numSamples) * Int32(numChannels) * Int32(bitsPerSample / 8)
