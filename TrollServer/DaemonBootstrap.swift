@@ -2,23 +2,23 @@ import Foundation
 import Darwin
 
 // ============================================================
-//  DaemonBootstrap - IPA 安装后自动注册为系统 Daemon
+//  DaemonBootstrap - IPA 安装后自动注册为用户 LaunchAgent
 //
-//  原理：App 首次启动时，把自己复制到 /usr/local/bin/，
-//  写入 LaunchDaemon plist，然后 launchctl 加载。
-//  此后设备每次开机自动运行 daemon，无需再打开 App。
+//  改用用户 LaunchAgent（而非系统 LaunchDaemon），
+//  所有路径在 /var/mobile/ 下，mobile 用户有完整读写权限，
+//  无需 root！巨魔安装的 App 直接就能自动安装 daemon。
 //
 //  200 台手机部署流程：
 //   1. 构建包含此模块的 IPA
 //   2. 通过巨魔批量安装到所有手机
-//   3. 巨魔安装后打开一次 App（或自动启动）
+//   3. 巨魔安装后打开一次 App（自动安装 daemon）
 //   4. 完成——此后永久在线
 // ============================================================
 
 enum DaemonBootstrap {
 
-    static let daemonBinaryPath = "/usr/local/bin/trollserverd"
-    static let plistPath = "/Library/LaunchDaemons/com.trollserver.daemon.plist"
+    static let daemonBinaryPath = "/var/mobile/.trollserverd"
+    static let plistPath = "/var/mobile/Library/LaunchAgents/com.trollserver.daemon.plist"
     static let logDir = "/var/mobile/Library/Logs"
 
     private static let markerFile = "/var/mobile/Library/Logs/.trollserver_daemon_installed"
@@ -47,7 +47,8 @@ enum DaemonBootstrap {
         }
 
         // 2. 创建必要目录
-        try? FileManager.default.createDirectory(atPath: "/usr/local/bin",
+        let launchAgentsDir = "/var/mobile/Library/LaunchAgents"
+        try? FileManager.default.createDirectory(atPath: launchAgentsDir,
                                                   withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(atPath: logDir,
                                                   withIntermediateDirectories: true)
@@ -65,7 +66,7 @@ enum DaemonBootstrap {
             return false
         }
 
-        // 4. 写入 LaunchDaemon plist
+        // 4. 写入 LaunchAgent plist
         let plistXML = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
