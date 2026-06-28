@@ -60,6 +60,7 @@ run_validate() {
         "ViewController.swift"
         "TrollHTTPServer.swift"
         "KeepAliveManager.swift"
+        "SilentAudioPlayer.swift"
         "ServiceMonitor.swift"
         "BootstrapServices.swift"
         "UDPBroadcaster.swift"
@@ -390,6 +391,7 @@ SWIFT_FILES=(
     "$SRC_DIR/ViewController.swift"
     "$SRC_DIR/TrollHTTPServer.swift"
     "$SRC_DIR/KeepAliveManager.swift"
+    "$SRC_DIR/SilentAudioPlayer.swift"
     "$SRC_DIR/ServiceMonitor.swift"
     "$SRC_DIR/BootstrapServices.swift"
     "$SRC_DIR/UDPBroadcaster.swift"
@@ -413,6 +415,7 @@ swiftc \
     -framework UIKit \
     -framework Foundation \
     -framework Network \
+    -framework AVFoundation \
     -Xlinker -rpath -Xlinker /usr/lib/swift \
     -Xlinker -sdk_version -Xlinker $SDK_VERSION \
     -o "$BUILD_DIR/$APP_NAME"
