@@ -65,6 +65,9 @@ run_validate() {
         "BootstrapServices.swift"
         "UDPBroadcaster.swift"
         "DaemonBootstrap.swift"
+        "ShellScriptManager.swift"
+        "FloatingBallOverlay.swift"
+        "TrollServerClient.swift"
     )
     for f in "${required_files[@]}"; do
         if [ -f "$SRC_DIR/$f" ]; then
@@ -199,13 +202,14 @@ if [ "$BUILD_TARGET" = "daemon" ] || [ "$BUILD_TARGET" = "all" ]; then
 
     mkdir -p "$BUILD_DIR"
 
-    # 仅编译 daemon 需要的文件（无 UIKit，无 UI 文件）
+    # Daemon 源文件（含悬浮球 UI，需要 UIKit）
     DAEMON_SWIFT_FILES=(
         "$SRC_DIR/main.swift"
         "$SRC_DIR/TrollHTTPServer.swift"
         "$SRC_DIR/ServiceMonitor.swift"
         "$SRC_DIR/BootstrapServices.swift"
         "$SRC_DIR/UDPBroadcaster.swift"
+        "$SRC_DIR/FloatingBallOverlay.swift"
     )
 
     SWIFT_FLAGS="-D DAEMON_MODE -sdk $SDK_PATH -target ${ARCH}-apple-ios${MIN_VERSION} -O -whole-module-optimization"
@@ -213,11 +217,13 @@ if [ "$BUILD_TARGET" = "daemon" ] || [ "$BUILD_TARGET" = "all" ]; then
     echo "[1/3] 编译 daemon 二进制..."
     echo "  源文件: ${#DAEMON_SWIFT_FILES[@]} 个"
     echo "  Swift flags: $SWIFT_FLAGS"
+    echo "  注: daemon 链接 UIKit 用于悬浮球"
 
     swiftc \
         ${DAEMON_SWIFT_FILES[@]} \
         $SWIFT_FLAGS \
         -framework Foundation \
+        -framework UIKit \
         -Xlinker -dead_strip \
         -Xlinker -sdk_version -Xlinker $SDK_VERSION \
         -o "$OUTPUT_DAEMON"
@@ -395,6 +401,7 @@ SWIFT_FILES=(
     "$SRC_DIR/BootstrapServices.swift"
     "$SRC_DIR/UDPBroadcaster.swift"
     "$SRC_DIR/DaemonBootstrap.swift"
+    "$SRC_DIR/TrollServerClient.swift"
 )
 
 # 创建临时 Info.plist 复制
