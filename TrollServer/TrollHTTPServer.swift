@@ -76,7 +76,7 @@ class TrollHTTPServer {
     private(set) var startTime: Date = Date()
 
     // ===================== 常量 =====================
-    static let defaultDocRoot = "/var/mobile/Documents/Game"
+    static let defaultDocRoot = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/Game")
 
     // ===================== 初始化 =====================
     init(port: UInt16 = 51111, docRoot: String? = nil) {
