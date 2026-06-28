@@ -30,6 +30,7 @@ import Darwin
 //  端点:
 //    GET  /api/heartbeat   → 心跳
 //    GET  /api/device      → 设备信息
+//    GET  /api/browse      → 浏览应用沙盒文件
 //    GET  /{path}          → 下载文件
 //    PUT  /{path}          → 上传文件
 //    MKCOL /{path}         → 创建目录
@@ -403,6 +404,9 @@ class TrollHTTPServer {
         if p == "/api/device" {
             return deviceInfo()
         }
+        if p == "/api/browse" || p.hasPrefix("/api/browse?") {
+            return handleBrowse(req)
+        }
         // WebDAV / 文件操作
         let filePath = (docRoot as NSString).appendingPathComponent(p)
 
@@ -542,6 +546,149 @@ class TrollHTTPServer {
             return listDirectory("")
         }
         return listDirectory(path)
+    }
+
+    // MARK: - 沙盒浏览（不影响现有 docRoot 安全策略）
+
+    /// GET /api/browse  → 浏览应用沙盒文件列表
+    /// GET /api/browse?path=Documents/foo → 浏览指定子目录
+    private func handleBrowse(_ req: HTTPRequest) -> HTTPResponse {
+        // 解析 ?path=xxx 参数
+        let queryPath: String
+        if let queryRange = req.path.range(of: "?path=") {
+            let raw = String(req.path[queryRange.upperBound...])
+                .removingPercentEncoding ?? raw
+            queryPath = raw.hasPrefix("/") ? String(raw.dropFirst()) : raw
+        } else {
+            queryPath = ""
+        }
+
+        // 根目录为应用沙盒根
+        let sandboxRoot = NSHomeDirectory()
+        let browsePath: String
+        if queryPath.isEmpty {
+            // 默认显示 Documents 目录
+            browsePath = (sandboxRoot as NSString).appendingPathComponent("Documents")
+        } else {
+            browsePath = (sandboxRoot as NSString).appendingPathComponent(queryPath)
+        }
+
+        // 安全检查：不允许穿越到沙盒外
+        guard browsePath.hasPrefix(sandboxRoot) else {
+            return HTTPResponse(statusCode: 403, headers: [:], body: "Forbidden".data(using: .utf8)!)
+        }
+
+        // 相对路径（用于 HTML 显示和链接）
+        let displayPath = browsePath.replacingOccurrences(of: sandboxRoot, with: "")
+
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: browsePath, isDirectory: &isDir) else {
+            return .notFound()
+        }
+        guard isDir.boolValue else {
+            // 如果是文件，直接返回文件内容
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: browsePath)) else {
+                return .internalError()
+            }
+            let mime = mimeType(for: browsePath)
+            return .ok(data, contentType: mime)
+        }
+
+        guard let files = try? fm.contentsOfDirectory(atPath: browsePath) else {
+            return .internalError()
+        }
+
+        // 构建 HTML
+        var html = "<!DOCTYPE html><html><head>"
+        html += "<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        html += "<title>📂 沙盒浏览: \(displayPath.isEmpty ? "/" : displayPath)</title>"
+        html += "<style>"
+        html += "body{font-family:-apple-system,sans-serif;margin:16px;background:#111;color:#eee}"
+        html += "h2{font-size:18px;word-break:break-all}"
+        html += "a{color:#6af;text-decoration:none}"
+        html += "ul{list-style:none;padding:0}"
+        html += "li{padding:8px 12px;margin:2px 0;background:#1a1a1a;border-radius:6px;font-size:15px}"
+        html += "li:hover{background:#222}"
+        html += ".size{float:right;color:#888;font-size:13px}"
+        html += ".up{border:1px dashed #444;margin-bottom:8px}"
+        html += "</style></head><body>"
+
+        html += "<h2>📂 沙盒: \(displayPath.isEmpty ? "/" : displayPath)</h2>"
+
+        // 上级目录链接
+        if browsePath != sandboxRoot, browsePath != (sandboxRoot as NSString).deletingLastPathComponent {
+            let parentRel = displayPath.isEmpty ? "" : (displayPath as NSString).deletingLastPathComponent
+            html += "<a href='/api/browse?path=\(parentRel)'><li class='up'>📂 ..</li></a>"
+        } else if browsePath != sandboxRoot {
+            html += "<a href='/api/browse'><li class='up'>📂 ..</li></a>"
+        }
+
+        // 目录在前，文件在后
+        let sorted = files.sorted {
+            let p0 = (browsePath as NSString).appendingPathComponent($0)
+            let p1 = (browsePath as NSString).appendingPathComponent($1)
+            var d0: ObjCBool = false, d1: ObjCBool = false
+            fm.fileExists(atPath: p0, isDirectory: &d0)
+            fm.fileExists(atPath: p1, isDirectory: &d1)
+            if d0.boolValue != d1.boolValue { return d0.boolValue }
+            return $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+
+        for f in sorted {
+            let full = (browsePath as NSString).appendingPathComponent(f)
+            var isDirF: ObjCBool = false
+            fm.fileExists(atPath: full, isDirectory: &isDirF)
+            let icon = isDirF.boolValue ? "📁" : "📄"
+            let relPath = displayPath.isEmpty ? f : "\(displayPath)/\(f)"
+
+            // 文件大小
+            var sizeStr = ""
+            if !isDirF.boolValue {
+                if let attrs = try? fm.attributesOfItem(atPath: full),
+                   let size = attrs[.size] as? Int64 {
+                    sizeStr = formatBytes(size)
+                }
+            }
+
+            if isDirF.boolValue {
+                html += "<li>\(icon) <a href='/api/browse?path=\(relPath)'>\(f)/</a></li>"
+            } else {
+                html += "<li>\(icon) <a href='/api/browse?path=\(relPath)'>\(f)</a> <span class='size'>\(sizeStr)</span></li>"
+            }
+        }
+
+        html += "</ul></body></html>"
+        guard let data = html.data(using: .utf8) else { return .internalError() }
+        return .ok(data, contentType: "text/html; charset=utf-8")
+    }
+
+    /// 根据文件扩展名返回 MIME 类型
+    private func mimeType(for path: String) -> String {
+        let ext = (path as NSString).pathExtension.lowercased()
+        switch ext {
+        case "html", "htm": return "text/html; charset=utf-8"
+        case "txt", "log", "md", "xml", "json": return "text/plain; charset=utf-8"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "pdf": return "application/pdf"
+        case "zip": return "application/zip"
+        case "ipa": return "application/octet-stream"
+        default: return "application/octet-stream"
+        }
+    }
+
+    /// 格式化字节大小
+    private func formatBytes(_ bytes: Int64) -> String {
+        let units = ["B", "KB", "MB", "GB"]
+        var size = Double(bytes)
+        var unitIdx = 0
+        while size >= 1024 && unitIdx < units.count - 1 {
+            size /= 1024
+            unitIdx += 1
+        }
+        return String(format: "%.1f %@", size, units[unitIdx])
     }
 
     // MARK: - 辅助
