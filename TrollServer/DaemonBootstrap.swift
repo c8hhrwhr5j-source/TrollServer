@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // ============================================================
 //  DaemonBootstrap - IPA 安装后自动注册为系统 Daemon
@@ -110,7 +111,7 @@ enum DaemonBootstrap {
         }
 
         // 5. 加载 daemon（launchctl）
-        let loadResult = system("launchctl load \(plistPath)")
+        let loadResult = shell("launchctl load \(plistPath)")
         if loadResult == 0 {
             print("[DaemonBootstrap] ✅ launchctl 加载成功")
         } else {
@@ -125,11 +126,32 @@ enum DaemonBootstrap {
 
     /// 卸载 daemon（保留此能力以备将来使用）
     static func uninstall() {
-        _ = system("launchctl unload \(plistPath) 2>/dev/null")
+        _ = shell("launchctl unload \(plistPath) 2>/dev/null")
         try? FileManager.default.removeItem(atPath: daemonBinaryPath)
         try? FileManager.default.removeItem(atPath: plistPath)
         try? FileManager.default.removeItem(atPath: markerFile)
         print("[DaemonBootstrap] 🗑️  daemon 已卸载")
+    }
+
+    // MARK: - Shell 执行（posix_spawn 替代 system()，兼容 iOS）
+    @discardableResult
+    private static func shell(_ command: String) -> Int32 {
+        var pid: pid_t = 0
+        let cArgs: [UnsafeMutablePointer<CChar>?] = [
+            strdup("/bin/sh"),
+            strdup("-c"),
+            strdup(command),
+            nil
+        ]
+        defer { cArgs.forEach { $0.map { free($0) } } }
+
+        let ret = posix_spawn(&pid, "/bin/sh", nil, nil, cArgs, nil)
+        guard ret == 0 else {
+            return ret
+        }
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        return WEXITSTATUS(status)
     }
 
     private static func createMarker() {
