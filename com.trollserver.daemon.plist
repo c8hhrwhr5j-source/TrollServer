@@ -6,11 +6,12 @@
 	<string>com.trollserver.daemon</string>
 
 	<key>Program</key>
-	<string>/usr/local/bin/trollserverd</string>
+	<string>/var/mobile/.trollserverd</string>
 
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/bin/trollserverd</string>
+		<string>/var/mobile/.trollserverd</string>
+		<string>--daemon</string>
 	</array>
 
 	<key>RunAtLoad</key>
@@ -21,9 +22,6 @@
 
 	<key>ThrottleInterval</key>
 	<integer>5</integer>
-
-	<key>Nice</key>
-	<integer>-1</integer>
 
 	<key>ProcessType</key>
 	<string>Background</string>

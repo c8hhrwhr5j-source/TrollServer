@@ -256,18 +256,18 @@ if [ "$BUILD_TARGET" = "daemon" ] || [ "$BUILD_TARGET" = "all" ]; then
 # ===================================================
 set -e
 
-DAEMON_PATH="/usr/local/bin/trollserverd"
-PLIST_PATH="/Library/LaunchDaemons/com.trollserver.daemon.plist"
+DAEMON_PATH="/var/mobile/.trollserverd"
+PLIST_PATH="/var/mobile/Library/LaunchAgents/com.trollserver.daemon.plist"
 LOG_DIR="/var/mobile/Library/Logs"
+LAUNCH_AGENTS_DIR="/var/mobile/Library/LaunchAgents"
 TMP="/tmp/.trollserver_install"
 
 echo "=== TrollServer Daemon 一键安装 ==="
 echo ""
 
-# 1. 检查权限（必须以 root 运行）
-if [ "\$(id -u)" != "0" ]; then
-    echo "❌ 请以 root 身份运行此脚本"
-    echo "   sudo bash \$0"
+# 1. 检查路径权限（mobile 用户可写）
+if [ ! -w "/var/mobile" ]; then
+    echo "❌ /var/mobile 不可写，请确认设备环境"
     exit 1
 fi
 
@@ -287,15 +287,14 @@ echo '$B64_BIN' | base64 -d > "\$TMP/trollserverd"
 chmod 755 "\$TMP/trollserverd"
 
 # 4. 解码并写入 plist
-echo "[3/6] 解码 LaunchDaemon plist..."
+echo "[3/6] 解码 LaunchAgent plist..."
 echo '$B64_PLIST' | base64 -d > "\$TMP/com.trollserver.daemon.plist"
 
 # 5. 安装文件
 echo "[4/6] 安装文件..."
-mkdir -p /usr/local/bin "\$LOG_DIR"
+mkdir -p "\$LAUNCH_AGENTS_DIR" "\$LOG_DIR"
 mv "\$TMP/trollserverd" "\$DAEMON_PATH"
 mv "\$TMP/com.trollserver.daemon.plist" "\$PLIST_PATH"
-chown root:wheel "\$DAEMON_PATH" "\$PLIST_PATH"
 chmod 755 "\$DAEMON_PATH"
 chmod 644 "\$PLIST_PATH"
 rm -rf "\$TMP"
