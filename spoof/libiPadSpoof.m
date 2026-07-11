@@ -575,9 +575,64 @@ static void hook_objc_method(Class cls, SEL orig, SEL spoof) {
 
 #pragma mark - 构造函数（dylib 被加载时执行）
 
-/// 通过 dispatch_after 延迟启动心跳，避免构造函数阶段访问主 RunLoop / NSURLSession
+/// 延迟初始化：等微信/QQ 自身启动完成后再安装 ObjC hooks
+/// 避免 constructor 阶段 hook 与 App 初始化流程冲突导致闪退
+static void install_objc_hooks(void) {
+    @try {
+        // ── UIDevice ──
+        Class devCls = [UIDevice class];
+        hook_objc_method(devCls, @selector(model),                    @selector(spoof_model));
+        hook_objc_method(devCls, @selector(localizedModel),           @selector(spoof_localizedModel));
+        hook_objc_method(devCls, @selector(userInterfaceIdiom),       @selector(spoof_userInterfaceIdiom));
+        hook_objc_method(devCls, @selector(systemName),               @selector(spoof_systemName));
+        hook_objc_method(devCls, @selector(systemVersion),            @selector(spoof_systemVersion));
+        hook_objc_method(devCls, @selector(name),                     @selector(spoof_name));
+        hook_objc_method(devCls, @selector(identifierForVendor),      @selector(spoof_identifierForVendor));
+        NSLog(@"[libiPadSpoof] ✅ UIDevice hooks 已安装");
+    } @catch (NSException *e) {
+        NSLog(@"[libiPadSpoof] ⚠️ UIDevice hooks 失败: %@", e.reason);
+    }
+
+    @try {
+        hook_objc_method([NSProcessInfo class],
+                         @selector(operatingSystemVersionString),
+                         @selector(spoof_operatingSystemVersionString));
+        hook_objc_method([NSProcessInfo class],
+                         @selector(operatingSystemVersion),
+                         @selector(spoof_operatingSystemVersion));
+        NSLog(@"[libiPadSpoof] ✅ NSProcessInfo hooks 已安装");
+    } @catch (NSException *e) {
+        NSLog(@"[libiPadSpoof] ⚠️ NSProcessInfo hooks 失败: %@", e.reason);
+    }
+
+    @try {
+        hook_objc_method([NSMutableURLRequest class],
+                         @selector(setValue:forHTTPHeaderField:),
+                         @selector(spoof_setValue:forHTTPHeaderField:));
+        NSLog(@"[libiPadSpoof] ✅ NSMutableURLRequest UA hooks 已安装");
+    } @catch (NSException *e) {
+        NSLog(@"[libiPadSpoof] ⚠️ NSMutableURLRequest hooks 失败: %@", e.reason);
+    }
+
+    @try {
+        Class wkCls = NSClassFromString(@"WKWebView");
+        if (wkCls) {
+            hook_objc_method(wkCls, @selector(customUserAgent), @selector(spoof_customUserAgent));
+            NSLog(@"[libiPadSpoof] ✅ WKWebView hooks 已安装");
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[libiPadSpoof] ⚠️ WKWebView hooks 失败: %@", e.reason);
+    }
+
+    @try {
+        hook_telephony_if_available();
+    } @catch (NSException *e) {
+        NSLog(@"[libiPadSpoof] ⚠️ CTTelephony hooks 失败: %@", e.reason);
+    }
+}
+
 static void start_heartbeat_delayed(void) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (g_heartbeatTimer) return;
         @try {
@@ -625,7 +680,7 @@ static void start_heartbeat_delayed(void) {
 
 __attribute__((constructor))
 static void spoof_load(void) {
-    // ── 第一步：安装崩溃信号处理器（必须在任何操作之前）──
+    // ── 第一步：信号处理器（必须在任何操作之前）──
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = spoof_crash_handler;
@@ -635,15 +690,16 @@ static void spoof_load(void) {
     sigaction(SIGABRT, &sa, NULL);
 
     @autoreleasepool {
-        NSLog(@"[libiPadSpoof] 📦 开始初始化...");
+        NSLog(@"[libiPadSpoof] 📦 constructor 开始...");
 
-        // ── 第二步：读配置（安全操作，只读文件）──
+        // ── 第二步：读配置（仅文件读取，绝无崩溃风险）──
         @try { refresh_config_if_needed(); }
         @catch (NSException *e) {
             NSLog(@"[libiPadSpoof] ⚠️ 读配置异常: %@", e.reason);
         }
 
-        // ── 第三步：Fishhook C 函数（每个独立 try）──
+        // ── 第三步：fishhook C 函数（纯符号替换，最安全）──
+        // 注意：不包括 _dyld_get_image_name（微信可能不使用这个符号，rebind 可能失败）
         @try {
             struct rebinding reb[] = {
                 {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
@@ -652,23 +708,12 @@ static void spoof_load(void) {
                 {"getifaddrs",   (void *)my_getifaddrs,   (void **)&orig_getifaddrs},
             };
             rebind_symbols(reb, sizeof(reb) / sizeof(reb[0]));
-            NSLog(@"[libiPadSpoof] ✅ 基础 C 函数 hooks 已安装");
+            NSLog(@"[libiPadSpoof] ✅ fishhook C 函数已安装");
         } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ 基础 C hooks 失败: %@", e.reason);
+            NSLog(@"[libiPadSpoof] ⚠️ fishhook 失败: %@", e.reason);
         }
 
-        // dyld 符号单独处理（可能不在符号表中）
-        @try {
-            struct rebinding dyldReb[] = {
-                {"_dyld_get_image_name", (void *)my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
-            };
-            rebind_symbols(dyldReb, 1);
-            NSLog(@"[libiPadSpoof] ✅ dyld hooks 已安装");
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ dyld hook 失败（可能不需要）: %@", e.reason);
-        }
-
-        // CFPreferences hook
+        // CFPreferences hook（同样用 fishhook，安全）
         @try {
             void *cfHandle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
             if (cfHandle) {
@@ -679,78 +724,26 @@ static void spoof_load(void) {
                          (void **)&orig_CFPrefsCopyAppValue},
                     };
                     rebind_symbols(cfReb, 1);
+                    NSLog(@"[libiPadSpoof] ✅ CFPreferences hook 已安装");
                 }
                 dlclose(cfHandle);
             }
-            NSLog(@"[libiPadSpoof] ✅ CFPreferences hooks 已安装");
         } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ CFPreferences hooks 失败: %@", e.reason);
+            NSLog(@"[libiPadSpoof] ⚠️ CFPreferences hook 失败: %@", e.reason);
         }
 
-        // ── 第四步：ObjC Method Swizzling（每个类独立 try）──
-        @try {
-            Class devCls = [UIDevice class];
-            hook_objc_method(devCls, @selector(model),                    @selector(spoof_model));
-            hook_objc_method(devCls, @selector(localizedModel),           @selector(spoof_localizedModel));
-            hook_objc_method(devCls, @selector(userInterfaceIdiom),       @selector(spoof_userInterfaceIdiom));
-            hook_objc_method(devCls, @selector(systemName),               @selector(spoof_systemName));
-            hook_objc_method(devCls, @selector(systemVersion),            @selector(spoof_systemVersion));
-            hook_objc_method(devCls, @selector(name),                     @selector(spoof_name));
-            hook_objc_method(devCls, @selector(identifierForVendor),      @selector(spoof_identifierForVendor));
-            Method cm = class_getClassMethod(devCls, @selector(currentDevice));
-            Method cn = class_getClassMethod(devCls, @selector(spoof_currentDevice));
-            if (cm && cn) method_exchangeImplementations(cm, cn);
-            NSLog(@"[libiPadSpoof] ✅ UIDevice hooks 已安装");
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ UIDevice hooks 失败: %@", e.reason);
-        }
-
-        @try {
-            hook_objc_method([NSProcessInfo class],
-                             @selector(operatingSystemVersionString),
-                             @selector(spoof_operatingSystemVersionString));
-            hook_objc_method([NSProcessInfo class],
-                             @selector(operatingSystemVersion),
-                             @selector(spoof_operatingSystemVersion));
-            NSLog(@"[libiPadSpoof] ✅ NSProcessInfo hooks 已安装");
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ NSProcessInfo hooks 失败: %@", e.reason);
-        }
-
-        @try {
-            hook_objc_method([NSMutableURLRequest class],
-                             @selector(setValue:forHTTPHeaderField:),
-                             @selector(spoof_setValue:forHTTPHeaderField:));
-            NSLog(@"[libiPadSpoof] ✅ NSMutableURLRequest UA hooks 已安装");
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ NSMutableURLRequest hooks 失败: %@", e.reason);
-        }
-
-        @try {
-            Class wkCls = NSClassFromString(@"WKWebView");
-            if (wkCls) {
-                hook_objc_method(wkCls, @selector(customUserAgent), @selector(spoof_customUserAgent));
-                NSLog(@"[libiPadSpoof] ✅ WKWebView hooks 已安装");
-            }
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ WKWebView hooks 失败: %@", e.reason);
-        }
-
-        @try {
-            hook_telephony_if_available();
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ CTTelephony hooks 失败: %@", e.reason);
-        }
-
-        // ── 第五步：延迟启动心跳（不阻塞构造函数）──
-        @try {
+        // ── 第四步：延迟安装 ObjC hooks（等 App 完全启动后再执行）──
+        // 核心思路：constructor 阶段不碰 ObjC runtime swizzling，
+        // 避免与微信自身的 +load / constructor 初始化流程冲突导致闪退。
+        // dispatch_after 1 秒后微信已完成自身初始化，此时 swizzling 安全。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            install_objc_hooks();
             start_heartbeat_delayed();
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ 心跳延迟启动失败: %@", e.reason);
-        }
+            NSLog(@"[libiPadSpoof] ✅ ObjC hooks 已延迟安装 (enabled=%d, product=%@)",
+                  g_enabled, g_productType);
+        });
 
-        // ── 日志（不访问 UIDevice，避免构造函数阶段崩溃）──
-        NSLog(@"[libiPadSpoof] ✅ 初始化完成 (enabled=%d, product=%@)",
-              g_enabled, g_productType);
+        NSLog(@"[libiPadSpoof] 📦 constructor 完成，等待 App 启动后安装 ObjC hooks...");
     }
 }
