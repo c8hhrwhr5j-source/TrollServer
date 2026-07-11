@@ -19,7 +19,7 @@ extension Data {
     func appendTo(file path: String) throws {
         if FileManager.default.fileExists(atPath: path) {
             let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
-            fh.seekToEndOfFile()
+            _ = fh.seekToEndOfFile()
             fh.write(self)
             fh.closeFile()
         } else {

@@ -205,7 +205,7 @@ class ViewController: UIViewController {
         gestaltStatusLabel.font = UIFont.systemFont(ofSize: 12)
         gestaltStatusLabel.textColor = .secondaryLabel
         gestaltStatusLabel.textAlignment = .center
-        gestaltStatusLabel.numberOfLines = 3
+        gestaltStatusLabel.numberOfLines = 0
         gestaltStatusLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let gestaltCard = UIView()
@@ -528,7 +528,9 @@ class ViewController: UIViewController {
                 case .success(let msg):
                     self.showGestaltResult("\(msg)\n⚠️ 建议重启手机使变更完全生效", .systemGreen)
                 case .failure(let err):
-                    self.showGestaltResult("❌ MobileGestalt 修改失败:\n\(err.localizedDescription)\n\n🔹 dylib 配置已写入(注入的 App 仍生效)", .red)
+                    let detail = err.localizedDescription
+                    self.showGestaltResult("❌ MobileGestalt 修改失败\n查看日志: /var/mobile/Library/Logs/trollserver.log", .red)
+                    self.showAlert(title: "MobileGestalt 修改失败", message: detail, showLogButton: true)
                 }
             }
         }
@@ -557,7 +559,9 @@ class ViewController: UIViewController {
                 case .success(let msg):
                     self.showGestaltResult("\(msg)\n⚠️ 建议重启手机使变更完全生效", .systemGreen)
                 case .failure(let err):
-                    self.showGestaltResult("❌ 恢复失败:\n\(err.localizedDescription)", .red)
+                    let detail = err.localizedDescription
+                    self.showGestaltResult("❌ 恢复失败\n查看日志: /var/mobile/Library/Logs/trollserver.log", .red)
+                    self.showAlert(title: "MobileGestalt 恢复失败", message: detail, showLogButton: true)
                 }
             }
         }
@@ -773,6 +777,35 @@ class ViewController: UIViewController {
         gestaltStatusLabel.textColor = color
         toiPadBtn.isEnabled = true
         toiPhoneBtn.isEnabled = true
+    }
+
+    private func showAlert(title: String, message: String, showLogButton: Bool = false) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "确定", style: .default))
+        if showLogButton {
+            alert.addAction(UIAlertAction(title: "查看日志", style: .default) { _ in
+                let logPath = "/var/mobile/Library/Logs/trollserver.log"
+                let logContent = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? "无法读取日志文件"
+                let logVC = UIViewController()
+                let tv = UITextView()
+                tv.text = logContent
+                tv.isEditable = false
+                tv.font = UIFont(name: "Menlo", size: 10) ?? UIFont.systemFont(ofSize: 10)
+                tv.translatesAutoresizingMaskIntoConstraints = false
+                logVC.view.addSubview(tv)
+                NSLayoutConstraint.activate([
+                    tv.topAnchor.constraint(equalTo: logVC.view.safeAreaLayoutGuide.topAnchor),
+                    tv.bottomAnchor.constraint(equalTo: logVC.view.bottomAnchor),
+                    tv.leadingAnchor.constraint(equalTo: logVC.view.leadingAnchor),
+                    tv.trailingAnchor.constraint(equalTo: logVC.view.trailingAnchor)
+                ])
+                logVC.title = "trollserver.log"
+                let nav = UINavigationController(rootViewController: logVC)
+                nav.modalPresentationStyle = .formSheet
+                self.present(nav, animated: true)
+            })
+        }
+        present(alert, animated: true)
     }
 
     // ===================== 工具 =====================

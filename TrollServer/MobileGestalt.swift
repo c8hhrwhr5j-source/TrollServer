@@ -45,57 +45,97 @@ enum MobileGestalt {
 
     // MARK: - 写入
 
+    // MARK: - 日志
+
+    static let logPath = "/var/mobile/Library/Logs/trollserver.log"
+
+    static func log(_ msg: String) {
+        let line = "[\(Date())] [MobileGestalt] \(msg)\n"
+        print(line, terminator: "")
+        try? line.data(using: .utf8)?.appendTo(file: logPath)
+    }
+
+    // MARK: - 写入
+
     /// 写入二进制 plist（指定路径）
-    /// 在 iOS 系统文件上，Data.write 常因权限/所有权失败，故使用 FileHandle + chmod 前置 + shell 兜底。
+    /// 多级容错：setuid(0) 提权 → chmod → FileHandle → /tmp + cp -f → Data.write
     static func writePlist(_ dict: [String: Any], to path: String) throws {
         let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .binary, options: 0)
         let fm = FileManager.default
+        var reasons: [String] = []
 
-        // 1) 尝试用 chmod 获取文件写权限（TrollStore 下 shell 可能以 root 运行）
-        let chmodResult = runShellCommand("chmod 666 \(path) 2>/dev/null")
-        print("[MobileGestalt] chmod 666 exit=\(chmodResult.exitCode)")
+        // 0) 尝试 setuid(0) 提权（TrollStore 越狱环境常见有效）
+        let origUid = getuid()
+        let origGid = getgid()
+        let setuidOk = (setuid(0) == 0)
+        let setgidOk = (setgid(0) == 0)
+        log("setuid(0)=\(setuidOk)(was=\(origUid)), setgid(0)=\(setgidOk)(was=\(origGid))")
 
-        // 2) 尝试 FileHandle 直接覆盖（跳过 Data.write 的权限检查差异）
+        defer {
+            if setuidOk { _ = setuid(origUid) }
+            if setgidOk { _ = setgid(origGid) }
+        }
+
+        // 1) 尝试 chmod 获取文件写权限
+        let chmodResult = runShellCommand("chmod 666 \(path) 2>/dev/null; echo $?")
+        let chmodExit = Int(chmodResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+        log("chmod 666 exit=\(chmodExit) (raw=\(chmodResult.stdout))")
+        if chmodExit != 0 {
+            reasons.append("chmod 666 失败(退出码=\(chmodExit))")
+        }
+
+        // 2) FileHandle 直接覆盖
         if fm.isWritableFile(atPath: path) {
             do {
                 let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
                 try fh.truncateFile(atOffset: 0)
                 try fh.write(contentsOf: data)
                 try fh.close()
-                print("[MobileGestalt] ✅ FileHandle 写入成功")
+                log("✅ FileHandle 写入成功")
                 return
             } catch {
-                print("[MobileGestalt] FileHandle 写入失败: \(error)")
+                log("FileHandle 写入失败: \(error)")
+                reasons.append("FileHandle: \(error.localizedDescription)")
             }
+        } else {
+            log("isWritableFile=false")
+            reasons.append("isWritableFile=false")
         }
 
-        // 3) 兜底：写入 /tmp 临时文件，用 cp -f 覆盖（shell 进程可能继承更高权限）
+        // 3) /tmp + cp -f 覆盖
         let tmpPath = "/tmp/MobileGestalt_\(Int.random(in: 1000...9999)).plist"
         do {
             try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
-            let cpResult = runShellCommand("cp -f \(tmpPath) \(path) 2>&1")
+            let cpResult = runShellCommand("cp -f \(tmpPath) \(path) 2>&1; echo \"?$\"")
             try? fm.removeItem(atPath: tmpPath)
-            if cpResult.exitCode == 0 {
-                print("[MobileGestalt] ✅ cp -f 覆盖成功")
+            let cpOut = cpResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cpOut.contains("?$0") || cpOut.isEmpty {
+                log("✅ cp -f 覆盖成功")
                 return
             }
-            print("[MobileGestalt] cp -f 失败: exit=\(cpResult.exitCode) out=\(cpResult.stdout)")
+            log("cp -f 失败: exit=\(cpResult.exitCode) out=\(cpOut)")
+            reasons.append("cp -f: \(cpOut)")
         } catch {
-            print("[MobileGestalt] /tmp 写入失败: \(error)")
+            log("/tmp 写入失败: \(error)")
+            reasons.append("/tmp: \(error.localizedDescription)")
         }
 
-        // 4) 最后尝试：直接 Data.write（有时在 chmod 后可用）
+        // 4) 直接 Data.write 兜底
         do {
             try data.write(to: URL(fileURLWithPath: path), options: [])
-            print("[MobileGestalt] ✅ Data.write 成功")
+            log("✅ Data.write 成功")
             return
         } catch {
-            print("[MobileGestalt] Data.write 失败: \(error)")
+            log("Data.write 失败: \(error)")
+            reasons.append("Data.write: \(error.localizedDescription)")
         }
 
+        // 全部失败，返回详细原因
+        let detail = reasons.joined(separator: "; ")
+        log("❌ 所有写入策略均失败: \(detail)")
         throw NSError(domain: "MobileGestalt", code: 3,
                       userInfo: [NSLocalizedDescriptionKey:
-                        "无法写入系统 MobileGestalt.plist。请检查：1) TrollStore 是否已开启'持久化/以 root 运行'；2) 文件系统是否被额外保护。"])
+                        "无法写入系统 MobileGestalt.plist。\n失败原因: \(detail)\n\n请检查:\n1) TrollStore 是否已开启'持久化/以 root 运行'\n2) 系统版本是否受支持\n3) 日志: \(logPath)"])
     }
 
     // MARK: - 备份 / 恢复
