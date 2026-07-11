@@ -26,6 +26,7 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 #import <sys/sysctl.h>
 #import <sys/errno.h>
 #import <string.h>
