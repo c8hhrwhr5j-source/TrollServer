@@ -67,13 +67,18 @@ static dispatch_queue_t g_configQueue = NULL;  // 配置读写串行队列
 static NSString *derive_ipad_idfv(void) {
     if (g_idfvBase) return g_idfvBase;
 
-    // 获取真实 IDFV 作为种子
-    NSString *realIDFV = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    // 获取真实 IDFV — 通过 spoof_identifierForVendor（交换后它指向原始实现）
+    NSString *realIDFV = nil;
+    @autoreleasepool {
+        NSUUID *uuid = [[UIDevice currentDevice] performSelector:@selector(spoof_identifierForVendor)];
+        if (uuid && [uuid isKindOfClass:[NSUUID class]]) {
+            realIDFV = [uuid UUIDString];
+        }
+    }
     if (!realIDFV) realIDFV = @"00000000-0000-0000-0000-000000000000";
 
     // 加盐后取 MD5（保持确定性 + 不可逆向推导真实 IDFV）
     NSString *salt = [realIDFV stringByAppendingString:@"+trollserver+ipad"];
-    // 简单而稳定的哈希（不需要 CommonCrypto，纯 NSData hash 位运算）
     const char *csalt = [salt UTF8String];
     unsigned char hash[16] = {0};
     unsigned long len = strlen(csalt);
@@ -82,7 +87,6 @@ static NSString *derive_ipad_idfv(void) {
         hash[(j * 7 + 3) % 16] += (unsigned char)(csalt[j] ^ 0xAA);
     }
 
-    // 格式化为标准 UUID: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
     g_idfvBase = [[NSString stringWithFormat:
         @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X",
         hash[0], hash[1], hash[2], hash[3],
