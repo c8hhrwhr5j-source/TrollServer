@@ -767,18 +767,23 @@ class ViewController: UIViewController {
     }
 
     private func updateTempSpaceUI() {
-        let usage = DylibInjector.getTempSpaceUsage()
-        let dirs = DylibInjector.listTempDirs()
-        if usage > 0 {
-            tempSpaceLabel.text = "占用: \(DylibInjector.formatBytes(usage))（\(dirs.count) 个临时目录）"
-            tempSpaceLabel.textColor = .systemRed
-            cleanupBtn.isEnabled = true
-            cleanupBtn.alpha = 1.0
-        } else {
-            tempSpaceLabel.text = "无临时文件占用"
-            tempSpaceLabel.textColor = .secondaryLabel
-            cleanupBtn.isEnabled = false
-            cleanupBtn.alpha = 0.5
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            let usage = DylibInjector.getTempSpaceUsage()
+            let dirs = DylibInjector.listTempDirs()
+            DispatchQueue.main.async {
+                if usage > 0 {
+                    self.tempSpaceLabel.text = "占用: \(DylibInjector.formatBytes(usage))（\(dirs.count) 个临时目录）"
+                    self.tempSpaceLabel.textColor = .systemRed
+                    self.cleanupBtn.isEnabled = true
+                    self.cleanupBtn.alpha = 1.0
+                } else {
+                    self.tempSpaceLabel.text = "无临时文件占用"
+                    self.tempSpaceLabel.textColor = .secondaryLabel
+                    self.cleanupBtn.isEnabled = false
+                    self.cleanupBtn.alpha = 0.5
+                }
+            }
         }
     }
 
