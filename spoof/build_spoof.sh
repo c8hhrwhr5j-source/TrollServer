@@ -16,9 +16,9 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 MIN_IOS="14.0"
 
 echo "==> SDK: $SDK"
-echo "==> 编译 libiPadSpoof.dylib ..."
+echo "==> 编译 libiPadSpoof.dylib (arm64 + arm64e) ..."
 
-clang -arch arm64 \
+clang -arch arm64 -arch arm64e \
       -isysroot "$SDK" \
       -miphoneos-version-min="$MIN_IOS" \
       -dynamiclib \
