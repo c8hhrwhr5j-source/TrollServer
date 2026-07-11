@@ -26,13 +26,12 @@ jobs:
       - name: Install ldid (entitlements signer)
         run: |
           if command -v ldid &> /dev/null; then
-            echo "ldid already installed:"
-            ldid -v
+            echo "ldid already installed"
           else
             echo "ldid not found, attempting install via Homebrew..."
             brew install ldid || echo "⚠️ brew install ldid failed (may not be available in Homebrew)"
             if command -v ldid &> /dev/null; then
-              ldid -v
+              echo "ldid installed successfully"
             else
               echo "⚠️ ldid not available, entitlements will need manual injection via TrollStore"
             fi
