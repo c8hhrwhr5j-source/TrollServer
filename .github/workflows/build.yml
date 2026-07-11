@@ -47,13 +47,11 @@ jobs:
             echo "ERROR: spoof directory not found"
             exit 1
           fi
-          chmod +x build_spoof.sh build_testboot.sh build_purec.sh
+          chmod +x build_spoof.sh build_ladder.sh build_testboot.sh build_purec.sh
           echo "=== 编译 libiPadSpoof (3变体: 完整/无UI/弱链UI) ==="
           ./build_spoof.sh
-          echo "=== 编译测试探针 ==="
-          ./build_testboot.sh
-          echo "=== 编译纯C探针 ==="
-          ./build_purec.sh
+          echo "=== 编译渐进式诊断阶梯 ==="
+          ./build_ladder.sh
           echo "=== 所有产物 ==="
           ls -la *.dylib
 

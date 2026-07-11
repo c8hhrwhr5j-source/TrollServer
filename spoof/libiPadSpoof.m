@@ -138,6 +138,7 @@ static NSTimeInterval g_lastRefresh = 0;
 
 #pragma mark - 辅助工具
 
+#ifndef NO_UIKIT
 /// 用原 IDFV 派生一个 iPad 风格的稳定 UUID（同一设备每次启动相同）
 /// 早期构造阶段 UIDevice 可能不可用，需要有完整降级路径
 static NSString *derive_ipad_idfv(void) {
@@ -179,6 +180,7 @@ static NSString *derive_ipad_idfv(void) {
         hash[10], hash[11], hash[12], hash[13], hash[14], hash[15]] copy];
     return g_idfvBase;
 }
+#endif // NO_UIKIT
 
 #pragma mark - 配置读取
 
