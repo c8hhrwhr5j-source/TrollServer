@@ -377,6 +377,8 @@ generate_icon() {
 
 mkdir -p "$ICON_DIR"
 generate_icon 1024 "icon-1024.png"
+generate_icon 80   "icon-40x40@2x.png"
+generate_icon 120  "icon-40x40@3x.png"
 generate_icon 120  "icon-120.png"
 generate_icon 180  "icon-180.png"
 generate_icon 76   "icon-76.png"
