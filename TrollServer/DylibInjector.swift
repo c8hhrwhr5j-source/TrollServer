@@ -479,7 +479,7 @@ enum DylibInjector {
         var foundArm64 = false
         for i in 0..<Int(narch) {
             let archOffset = 8 + i * 20
-            let cputype = readU32(data: data, offset: archOffset + 4, swapped: isSwapped)
+            let cputype = readU32(data: data, offset: archOffset + 0, swapped: isSwapped)
             if cputype == 0x0100000C { // CPU_TYPE_ARM64
                 let sliceOffset = Int(readU32(data: data, offset: archOffset + 8, swapped: isSwapped))
                 let sliceSize   = Int(readU32(data: data, offset: archOffset + 12, swapped: isSwapped))
@@ -566,7 +566,7 @@ enum DylibInjector {
             if isSwapped { nfat = nfat.byteSwapped }
             var found = false
             for i in 0..<Int(nfat) {
-                fseeko(handle, off_t(8 + i * 20 + 4), SEEK_SET)
+                fseeko(handle, off_t(8 + i * 20 + 0), SEEK_SET)
                 var cpu: UInt32 = 0
                 guard fread(&cpu, 4, 1, handle) == 1 else { continue }
                 if isSwapped { cpu = cpu.byteSwapped }
@@ -636,7 +636,7 @@ enum DylibInjector {
             guard fread(&nfat, 4, 1, handle) == 1 else { return false }
             if isSwapped { nfat = nfat.byteSwapped }
             for i in 0..<Int(nfat) {
-                fseeko(handle, off_t(8 + i * 20 + 4), SEEK_SET)
+                fseeko(handle, off_t(8 + i * 20 + 0), SEEK_SET)
                 var cpu: UInt32 = 0
                 guard fread(&cpu, 4, 1, handle) == 1 else { continue }
                 if isSwapped { cpu = cpu.byteSwapped }
