@@ -24,6 +24,9 @@ private let MH_CIGAM_64: UInt32    = 0xCFFAEDFE
 private let LC_LOAD_DYLIB: UInt32       = 0x0000000C
 private let LC_CODE_SIGNATURE: UInt32   = 0x0000001D
 
+private let LC_ENCRYPTION_INFO: UInt32      = 0x00000021
+private let LC_ENCRYPTION_INFO_64: UInt32   = 0x0000002C
+
 // MARK: - 注入引擎
 
 enum DylibInjector {
@@ -89,6 +92,12 @@ enum DylibInjector {
         let appName = (appPath as NSString).lastPathComponent
         let binaryPath = "\(appPath)/\(execName)"
         let loadPath = "@executable_path/Frameworks/\(dylibName)"
+
+        // 0. 检查二进制是否被 FairPlay 加密（App Store 安装的应用）
+        if isBinaryEncrypted(at: binaryPath) {
+            log("❌ \(execName) 二进制被 FairPlay 加密，无法注入。请先解密。")
+            return .failure(.binaryEncrypted)
+        }
 
         // 找到内嵌 dylib
         let dylibSrc: String
@@ -610,6 +619,69 @@ enum DylibInjector {
         return false
     }
 
+    // MARK: - FairPlay 加密检测
+
+    /// 检测 Mach-O 二进制是否被 FairPlay DRM 加密（App Store 安装的应用）
+    private static func isBinaryEncrypted(at path: String) -> Bool {
+        guard let handle = fopen(path, "rb") else { return false }
+        defer { fclose(handle) }
+
+        var magic: UInt32 = 0
+        guard fread(&magic, 4, 1, handle) == 1 else { return false }
+
+        if magic == 0xCAFEBABE || magic == 0xBEBAFECA {
+            let isSwapped = (magic == 0xBEBAFECA)
+            var nfat: UInt32 = 0
+            fseeko(handle, 4, SEEK_SET)
+            guard fread(&nfat, 4, 1, handle) == 1 else { return false }
+            if isSwapped { nfat = nfat.byteSwapped }
+            for i in 0..<Int(nfat) {
+                fseeko(handle, off_t(8 + i * 20 + 4), SEEK_SET)
+                var cpu: UInt32 = 0
+                guard fread(&cpu, 4, 1, handle) == 1 else { continue }
+                if isSwapped { cpu = cpu.byteSwapped }
+                if cpu == 0x0100000C {
+                    fseeko(handle, off_t(8 + i * 20 + 8), SEEK_SET)
+                    var off: UInt32 = 0
+                    guard fread(&off, 4, 1, handle) == 1 else { continue }
+                    if isSwapped { off = off.byteSwapped }
+                    fseeko(handle, off_t(off), SEEK_SET)
+                    var m: UInt32 = 0
+                    guard fread(&m, 4, 1, handle) == 1 else { continue }
+                    magic = m
+                    break
+                }
+            }
+        }
+
+        guard magic == MH_MAGIC_64 || magic == MH_CIGAM_64 else { return false }
+        let isSwapped = (magic == MH_CIGAM_64)
+
+        var header: [UInt32] = [0, 0, 0, 0]
+        fseeko(handle, 12, SEEK_CUR)
+        guard fread(&header, 4 * 4, 1, handle) == 1 else { return false }
+        let ncmds = isSwapped ? header[1].byteSwapped : header[1]
+        var lcOff = off_t(32)
+
+        for _ in 0..<Int(ncmds) {
+            fseeko(handle, lcOff, SEEK_SET)
+            var lc: [UInt32] = [0, 0]
+            guard fread(&lc, 8, 1, handle) == 1 else { break }
+            let cmd  = isSwapped ? lc[0].byteSwapped : lc[0]
+            let size = isSwapped ? lc[1].byteSwapped : lc[1]
+
+            if cmd == LC_ENCRYPTION_INFO || cmd == LC_ENCRYPTION_INFO_64 {
+                fseeko(handle, lcOff + 16, SEEK_SET)
+                var cryptid: UInt32 = 0
+                guard fread(&cryptid, 4, 1, handle) == 1 else { return false }
+                if isSwapped { cryptid = cryptid.byteSwapped }
+                return cryptid != 0
+            }
+            lcOff += off_t(size)
+        }
+        return false
+    }
+
     // MARK: - 小端读写
 
     private static func readU32(data: Data, offset: Int, swapped: Bool = false) -> UInt32 {
@@ -646,6 +718,7 @@ enum DylibInjector {
         case cantCopyDylib(String)
         case patchFailed(String)
         case invalidBinary
+        case binaryEncrypted
         case noArm64Slice
         case packFailed(String)
 
@@ -659,6 +732,7 @@ enum DylibInjector {
             case .cantCopyDylib(let s): return "无法复制 dylib: \(s)"
             case .patchFailed(let s):   return "二进制修补失败: \(s)"
             case .invalidBinary:        return "无法识别 App 二进制格式"
+            case .binaryEncrypted:      return "二进制被 FairPlay DRM 加密。从 App Store 安装的应用需要先用 AppDump 或 dumpdecrypted 等工具解密后，才能注入 dylib 并重新安装。请获取已解密的 IPA 后重试。"
             case .noArm64Slice:         return "Fat binary 中未找到 arm64 切片"
             case .packFailed(let s):    return "IPA 打包失败: \(s)"
             }
