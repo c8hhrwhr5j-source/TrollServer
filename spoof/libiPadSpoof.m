@@ -506,6 +506,45 @@ static CFPropertyListRef my_CFPrefsCopyAppValue(CFStringRef key, CFStringRef app
 @end
 
 
+// ──── UIScreen（屏幕尺寸 → iPad 分辨率）────
+/// QQ/微信会对比 UIScreen.bounds 与设备型号验证一致性
+/// iPhone 屏幕再声称 iPad 型号 → "未知设备"
+@interface UIScreen (SpoofExt)
+- (CGRect)spoof_bounds;
+- (CGRect)spoof_nativeBounds;
+- (CGFloat)spoof_scale;
+- (CGFloat)spoof_nativeScale;
+@end
+
+@implementation UIScreen (SpoofExt)
+
+/// iPad 12.9-inch (1024×1366 @2x) 匹配 iPad14,2
+static inline CGRect spoof_screen_bounds(void) {
+    return CGRectMake(0, 0, 1024, 1366);
+}
+static inline CGRect spoof_screen_nativeBounds(void) {
+    return CGRectMake(0, 0, 2048, 2732);
+}
+
+- (CGRect)spoof_bounds {
+    refresh_config_if_needed();
+    return g_enabled ? spoof_screen_bounds() : [self spoof_bounds];
+}
+- (CGRect)spoof_nativeBounds {
+    refresh_config_if_needed();
+    return g_enabled ? spoof_screen_nativeBounds() : [self spoof_nativeBounds];
+}
+- (CGFloat)spoof_scale {
+    refresh_config_if_needed();
+    return g_enabled ? 2.0 : [self spoof_scale];
+}
+- (CGFloat)spoof_nativeScale {
+    refresh_config_if_needed();
+    return g_enabled ? 2.0 : [self spoof_nativeScale];
+}
+@end
+
+
 // ──── CTTelephonyNetworkInfo（隐藏蜂窝能力）────
 /// WiFi-only iPad 不应有蜂窝运营商信息
 /// 注意：CTTelephony 是私有框架，因此用 NSClassFromString 动态获取
@@ -657,6 +696,17 @@ static void install_objc_hooks(void) {
         bootlog("[DELAY] UIDevice hooks 已安装");
     } @catch (NSException *e) {
         bootlogf("[DELAY] UIDevice hooks 失败: %s", [e.reason UTF8String]);
+    }
+
+    @try {
+        Class scCls = [UIScreen class];
+        hook_objc_method(scCls, @selector(bounds),         @selector(spoof_bounds));
+        hook_objc_method(scCls, @selector(nativeBounds),   @selector(spoof_nativeBounds));
+        hook_objc_method(scCls, @selector(scale),          @selector(spoof_scale));
+        hook_objc_method(scCls, @selector(nativeScale),    @selector(spoof_nativeScale));
+        bootlog("[DELAY] UIScreen hooks 已安装");
+    } @catch (NSException *e) {
+        bootlogf("[DELAY] UIScreen hooks 失败: %s", [e.reason UTF8String]);
     }
 #endif
 
