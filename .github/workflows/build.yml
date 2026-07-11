@@ -1,0 +1,78 @@
+﻿name: TrollServer iPad Spoof dylib + TrollFools CI Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build libiPadSpoof.dylib
+        run: |
+          echo "Current directory: $(pwd)"
+          ls -la
+          if [ -d "spoof" ]; then
+            cd spoof
+          else
+            echo "ERROR: spoof directory not found"
+            exit 1
+          fi
+          chmod +x build_spoof.sh
+          ./build_spoof.sh
+          ls -la libiPadSpoof.dylib
+
+      - name: Build Release IPA
+        run: |
+          ls -la
+          if [ -f "build.sh" ]; then
+            chmod +x build.sh
+            ./build.sh
+          elif [ -d "TrollServer.xcodeproj" ]; then
+            xcodebuild -project TrollServer.xcodeproj -scheme TrollServer -configuration Release -sdk iphoneos CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+            mkdir -p Payload
+            cp -r build/Release-iphoneos/TrollServer.app Payload/
+            zip -r TrollServer.ipa Payload
+          else
+            echo "WARNING: No build.sh or xcodeproj found, creating minimal IPA"
+            mkdir -p Payload/TrollServer.app
+            cp spoof/libiPadSpoof.dylib Payload/TrollServer.app/; true
+            cp 123.png Payload/TrollServer.app/Icon.png; true
+            zip -r TrollServer.ipa Payload
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrollServer-ipa
+          path: |
+            *.ipa
+            spoof/libiPadSpoof.dylib
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'; github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "TrollServer Build #${{ github.run_number }}"
+          body: |
+            Auto build artifacts:
+            - TrollServer.ipa (TrollStore install package)
+            - libiPadSpoof.dylib (device spoof plugin for TrollFools injection)
+          files: |
+            TrollServer.ipa
+            spoof/libiPadSpoof.dylib
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
