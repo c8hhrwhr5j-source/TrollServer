@@ -46,9 +46,11 @@ enum MobileGestalt {
     // MARK: - 写入
 
     /// 写入二进制 plist（指定路径）
+    /// 注意：TrollStore 环境下 `.atomic` 可能因临时文件创建权限失败，故使用直接写入。
     static func writePlist(_ dict: [String: Any], to path: String) throws {
         let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .binary, options: 0)
-        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        // 不使用 .atomic：系统 Caches 目录可能不允许创建临时文件
+        try data.write(to: URL(fileURLWithPath: path), options: [])
     }
 
     // MARK: - 备份 / 恢复
