@@ -67,6 +67,7 @@ run_validate() {
         "UDPBroadcaster.swift"
         "DaemonBootstrap.swift"
         "SpoofConfig.swift"
+        "MobileGestalt.swift"
     )
     for f in "${required_files[@]}"; do
         if [ -f "$SRC_DIR/$f" ]; then
@@ -210,6 +211,7 @@ if [ "$BUILD_TARGET" = "daemon" ] || [ "$BUILD_TARGET" = "all" ]; then
         "$SRC_DIR/BootstrapServices.swift"
         "$SRC_DIR/UDPBroadcaster.swift"
         "$SRC_DIR/SpoofConfig.swift"
+        "$SRC_DIR/MobileGestalt.swift"
     )
 
     SWIFT_FLAGS="-D DAEMON_MODE -sdk $SDK_PATH -target ${ARCH}-apple-ios${MIN_VERSION} -O -whole-module-optimization"
@@ -402,6 +404,7 @@ SWIFT_FILES=(
     "$SRC_DIR/DaemonBootstrap.swift"
     "$SRC_DIR/SpoofConfig.swift"
     "$SRC_DIR/SpoofSettingsViewController.swift"
+    "$SRC_DIR/MobileGestalt.swift"
 )
 
 # 创建临时 Info.plist 复制
