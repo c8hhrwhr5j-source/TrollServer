@@ -4,16 +4,23 @@ import Foundation
 ///
 /// 直接读写 com.apple.MobileGestalt.plist 的 CacheExtra 字段，
 /// 写入特定 iPad 标识键，不破坏系统原有结构。
+/// 路径通过 discoverGestaltPlist() 动态探测（iOS 14~17 兼容）。
 /// TrollStore 下具备完整读写权限即可直接生效。
 enum MobileGestalt {
 
     // MARK: - 路径
 
-    /// iOS 14~17 固定缓存路径（TrollStore 可读写）
-    static let mgPlistPath = "/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist"
+    /// 动态定位 MobileGestalt.plist（复用 discoverGestaltPlist 多路径探测）
+    static func resolvePlistPath() throws -> String {
+        guard let path = discoverGestaltPlist() else {
+            throw NSError(domain: "MobileGestalt", code: 0,
+                          userInfo: [NSLocalizedDescriptionKey: "未找到 com.apple.MobileGestalt.plist，系统可能不支持或沙盒受限"])
+        }
+        return path
+    }
 
-    /// 备份路径
-    static var backupPath: String { mgPlistPath + ".backup" }
+    /// 备份路径（基于实际命中路径）
+    static func backupPath(for mgPath: String) -> String { mgPath + ".backup" }
 
     // MARK: - iPad 伪装字段（CacheExtra 内写入）
 
@@ -27,9 +34,9 @@ enum MobileGestalt {
 
     // MARK: - 读取
 
-    /// 读取完整 plist（二进制格式）
-    static func readPlist() throws -> [String: Any] {
-        let data = try Data(contentsOf: URL(fileURLWithPath: mgPlistPath))
+    /// 读取完整 plist（二进制格式，指定路径）
+    static func readPlist(at path: String) throws -> [String: Any] {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
         guard let root = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
             throw NSError(domain: "MobileGestalt", code: 1, userInfo: [NSLocalizedDescriptionKey: "根节点不是字典"])
         }
@@ -38,31 +45,33 @@ enum MobileGestalt {
 
     // MARK: - 写入
 
-    /// 写入二进制 plist
-    static func writePlist(_ dict: [String: Any]) throws {
+    /// 写入二进制 plist（指定路径）
+    static func writePlist(_ dict: [String: Any], to path: String) throws {
         let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .binary, options: 0)
-        try data.write(to: URL(fileURLWithPath: mgPlistPath), options: .atomic)
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
     // MARK: - 备份 / 恢复
 
     /// 首次备份（仅在备份文件不存在时执行）
-    static func backupIfNeeded() {
+    static func backupIfNeeded(mgPath: String) {
+        let bkPath = backupPath(for: mgPath)
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: backupPath) else { return }
-        try? fm.copyItem(atPath: mgPlistPath, toPath: backupPath)
-        print("[MobileGestalt] 💾 已备份 → \(backupPath)")
+        guard !fm.fileExists(atPath: bkPath) else { return }
+        try? fm.copyItem(atPath: mgPath, toPath: bkPath)
+        print("[MobileGestalt] 💾 已备份 → \(bkPath)")
     }
 
     /// 从备份恢复原始 plist
-    static func restoreFromBackup() throws {
+    static func restoreFromBackup(mgPath: String) throws {
+        let bkPath = backupPath(for: mgPath)
         let fm = FileManager.default
-        guard fm.fileExists(atPath: backupPath) else {
+        guard fm.fileExists(atPath: bkPath) else {
             throw NSError(domain: "MobileGestalt", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "备份文件不存在，无法恢复"])
         }
-        try fm.removeItem(atPath: mgPlistPath)
-        try fm.copyItem(atPath: backupPath, toPath: mgPlistPath)
+        try fm.removeItem(atPath: mgPath)
+        try fm.copyItem(atPath: bkPath, toPath: mgPath)
         print("[MobileGestalt] 🔄 已从备份恢复原始文件")
     }
 
@@ -72,9 +81,10 @@ enum MobileGestalt {
     static func enableIPadMode(productType: String = "iPad14,2",
                                 marketingName: String = "iPad Pro 12.9-inch (6th generation)") -> Result<String, Error> {
         do {
-            backupIfNeeded()
+            let mgPath = try resolvePlistPath()
+            backupIfNeeded(mgPath: mgPath)
 
-            var root = try readPlist()
+            var root = try readPlist(at: mgPath)
 
             // 获取或创建 CacheExtra
             var cacheExtra = root["CacheExtra"] as? [String: Any] ?? [:]
@@ -88,7 +98,7 @@ enum MobileGestalt {
             }
 
             root["CacheExtra"] = cacheExtra
-            try writePlist(root)
+            try writePlist(root, to: mgPath)
 
             // 刷新缓存
             _ = runShellCommandSimple("/usr/bin/killall -HUP cfprefsd 2>/dev/null || true")
@@ -107,9 +117,10 @@ enum MobileGestalt {
     @discardableResult
     static func disableIPadMode() -> Result<String, Error> {
         do {
-            backupIfNeeded()
+            let mgPath = try resolvePlistPath()
+            backupIfNeeded(mgPath: mgPath)
 
-            var root = try readPlist()
+            var root = try readPlist(at: mgPath)
 
             guard var cacheExtra = root["CacheExtra"] as? [String: Any] else {
                 return .success("已是原始模式，无需恢复")
@@ -128,7 +139,7 @@ enum MobileGestalt {
             }
 
             root["CacheExtra"] = cacheExtra
-            try writePlist(root)
+            try writePlist(root, to: mgPath)
 
             _ = runShellCommandSimple("/usr/bin/killall -HUP cfprefsd 2>/dev/null || true")
 
@@ -162,7 +173,8 @@ enum MobileGestalt {
 
     /// 读取当前是否处于 iPad 伪装模式（检查 CacheExtra 中是否有 iPad 标识）
     static func isIPadModeActive() -> Bool {
-        guard let root = try? readPlist(),
+        guard let mgPath = try? resolvePlistPath(),
+              let root = try? readPlist(at: mgPath),
               let cacheExtra = root["CacheExtra"] as? [String: Any] else {
             return false
         }
@@ -171,7 +183,8 @@ enum MobileGestalt {
 
     /// 读取当前伪装的型号
     static func currentProductType() -> String? {
-        guard let root = try? readPlist(),
+        guard let mgPath = try? resolvePlistPath(),
+              let root = try? readPlist(at: mgPath),
               let cacheExtra = root["CacheExtra"] as? [String: Any] else {
             return nil
         }
