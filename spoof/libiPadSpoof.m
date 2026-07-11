@@ -37,6 +37,8 @@
  *   - 手动 insert_dylib 进重签 IPA 后 TrollStore 安装
  */
 
+#import <signal.h>
+#import <fcntl.h>
 #import <spawn.h>
 #import <sys/wait.h>
 #import <Foundation/Foundation.h>
@@ -53,6 +55,25 @@
 #import <strings.h>
 #import "fishhook.h"
 
+#pragma mark - 崩溃信号处理器（调试用）
+
+static void spoof_crash_handler(int sig, siginfo_t *info, void *ctx) {
+    // 写入 /tmp 便于事后排查
+    const char *names[] = {"?", "SIGHUP","SIGINT","SIGQUIT","SIGILL",
+        "SIGTRAP","SIGABRT","SIGEMT","SIGFPE","SIGKILL",
+        "SIGBUS","SIGSEGV","SIGSYS","SIGPIPE","SIGALRM",
+        "SIGTERM"};
+    const char *name = (sig >= 1 && sig <= 15) ? names[sig] : "UNKNOWN";
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[libiPadSpoof] ☠️ 崩溃信号 %s (sig=%d, addr=%p)\n",
+             name, sig, info ? info->si_addr : NULL);
+    int fd = open("/tmp/libiPadSpoof_crash.log", O_WRONLY|O_CREAT|O_APPEND, 0644);
+    if (fd >= 0) { write(fd, buf, strlen(buf)); close(fd); }
+    // 重置为默认行为，让系统正常生成 crash report
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 #pragma mark - 全局状态
 
 static BOOL       g_enabled       = YES;
@@ -63,15 +84,23 @@ static NSTimeInterval g_lastRefresh = 0;
 #pragma mark - 辅助工具
 
 /// 用原 IDFV 派生一个 iPad 风格的稳定 UUID（同一设备每次启动相同）
+/// 早期构造阶段 UIDevice 可能不可用，需要有完整降级路径
 static NSString *derive_ipad_idfv(void) {
     if (g_idfvBase) return g_idfvBase;
 
-    // 获取真实 IDFV — 通过 spoof_identifierForVendor（交换后它指向原始实现）
     NSString *realIDFV = nil;
     @autoreleasepool {
-        NSUUID *uuid = [[UIDevice currentDevice] performSelector:@selector(spoof_identifierForVendor)];
-        if (uuid && [uuid isKindOfClass:[NSUUID class]]) {
-            realIDFV = [uuid UUIDString];
+        @try {
+            // 通过 spoof_identifierForVendor（交换后它指向原始实现）
+            UIDevice *dev = [UIDevice performSelector:@selector(currentDevice)];
+            if (dev && [dev respondsToSelector:@selector(spoof_identifierForVendor)]) {
+                NSUUID *uuid = [dev performSelector:@selector(spoof_identifierForVendor)];
+                if (uuid && [uuid isKindOfClass:[NSUUID class]]) {
+                    realIDFV = [uuid UUIDString];
+                }
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ derive_ipad_idfv 异常: %@", e.reason);
         }
     }
     if (!realIDFV) realIDFV = @"00000000-0000-0000-0000-000000000000";
@@ -532,57 +561,9 @@ static NSString *spoof_ua_string(NSString *ua) {
 
 /// dylib 内部定时检测 TrollServer HTTP 是否可达
 /// 若连续 3 次不可达，尝试触发 daemon 重启
+/// 注意：心跳通过 start_heartbeat_delayed() 延迟 2 秒启动，不在构造函数中直接创建
 static NSTimer *g_heartbeatTimer = nil;
 static int g_heartbeatMissCount = 0;
-
-static void start_heartbeat(void) {
-    if (g_heartbeatTimer) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        g_heartbeatTimer = [NSTimer scheduledTimerWithTimeInterval:120.0
-                                                           repeats:YES
-                                                             block:^(NSTimer *t) {
-            // 每 120 秒尝试访问 TrollServer
-            NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:51111/api/spoof"];
-            NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-            req.HTTPMethod = @"GET";
-            req.timeoutInterval = 3.0;
-
-            NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-            NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-            [[session dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-                if (d && !e) {
-                    g_heartbeatMissCount = 0;
-                } else {
-                    g_heartbeatMissCount++;
-                    if (g_heartbeatMissCount >= 3) {
-                        NSLog(@"[libiPadSpoof] ⚠️ TrollServer 连续 %d 次不可达，尝试重启 daemon",
-                              g_heartbeatMissCount);
-                        // 尝试通过 launchctl 重启 daemon（posix_spawn 替代 system()）
-                        pid_t pid;
-                        char *argv[] = {
-                            (char *)"/usr/bin/launchctl",
-                            (char *)"kickstart",
-                            (char *)"-k",
-                            (char *)"system/com.trollserver.daemon",
-                            NULL
-                        };
-                        if (posix_spawn(&pid, argv[0], NULL, NULL, argv, NULL) == 0) {
-                            waitpid(pid, NULL, 0);
-                        }
-                        g_heartbeatMissCount = 0;
-                    }
-                }
-            }] resume];
-        }];
-
-        // 添加到 common modes 确保滚动时也触发
-        [[NSRunLoop mainRunLoop] addTimer:g_heartbeatTimer forMode:NSRunLoopCommonModes];
-        // 立即触发一次
-        [g_heartbeatTimer fire];
-        NSLog(@"[libiPadSpoof] 💓 心跳检测已启动（间隔 120s）");
-    });
-}
-
 
 #pragma mark - hook_objc_method 辅助宏
 
@@ -594,24 +575,101 @@ static void hook_objc_method(Class cls, SEL orig, SEL spoof) {
 
 #pragma mark - 构造函数（dylib 被加载时执行）
 
+/// 通过 dispatch_after 延迟启动心跳，避免构造函数阶段访问主 RunLoop / NSURLSession
+static void start_heartbeat_delayed(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (g_heartbeatTimer) return;
+        @try {
+            g_heartbeatTimer = [NSTimer scheduledTimerWithTimeInterval:120.0
+                                                               repeats:YES
+                                                                 block:^(NSTimer *t) {
+                NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:51111/api/spoof"];
+                NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+                req.HTTPMethod = @"GET";
+                req.timeoutInterval = 3.0;
+                NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+                NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+                [[session dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+                    if (d && !e) {
+                        g_heartbeatMissCount = 0;
+                    } else {
+                        g_heartbeatMissCount++;
+                        if (g_heartbeatMissCount >= 3) {
+                            NSLog(@"[libiPadSpoof] ⚠️ TrollServer 连续 %d 次不可达，尝试重启 daemon",
+                                  g_heartbeatMissCount);
+                            pid_t pid;
+                            char *argv[] = {
+                                (char *)"/usr/bin/launchctl",
+                                (char *)"kickstart",
+                                (char *)"-k",
+                                (char *)"system/com.trollserver.daemon",
+                                NULL
+                            };
+                            if (posix_spawn(&pid, argv[0], NULL, NULL, argv, NULL) == 0) {
+                                waitpid(pid, NULL, 0);
+                            }
+                            g_heartbeatMissCount = 0;
+                        }
+                    }
+                }] resume];
+            }];
+            [[NSRunLoop mainRunLoop] addTimer:g_heartbeatTimer forMode:NSRunLoopCommonModes];
+            [g_heartbeatTimer fire];
+            NSLog(@"[libiPadSpoof] 💓 心跳检测已启动（间隔 120s）");
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ 心跳启动失败: %@ %@", e.name, e.reason);
+        }
+    });
+}
+
 __attribute__((constructor))
 static void spoof_load(void) {
+    // ── 第一步：安装崩溃信号处理器（必须在任何操作之前）──
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = spoof_crash_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+
     @autoreleasepool {
+        NSLog(@"[libiPadSpoof] 📦 开始初始化...");
+
+        // ── 第二步：读配置（安全操作，只读文件）──
+        @try { refresh_config_if_needed(); }
+        @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ 读配置异常: %@", e.reason);
+        }
+
+        // ── 第三步：Fishhook C 函数（每个独立 try）──
         @try {
-            refresh_config_if_needed();
+            struct rebinding reb[] = {
+                {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
+                {"uname",        (void *)my_uname,        (void **)&orig_uname},
+                {"sysctl",       (void *)my_sysctl,       (void **)&orig_sysctl},
+                {"getifaddrs",   (void *)my_getifaddrs,   (void **)&orig_getifaddrs},
+            };
+            rebind_symbols(reb, sizeof(reb) / sizeof(reb[0]));
+            NSLog(@"[libiPadSpoof] ✅ 基础 C 函数 hooks 已安装");
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ 基础 C hooks 失败: %@", e.reason);
+        }
 
-        // ── C 函数 Hook（fishhook） ──
-        struct rebinding reb[] = {
-            {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
-            {"uname",        (void *)my_uname,        (void **)&orig_uname},
-            {"sysctl",       (void *)my_sysctl,       (void **)&orig_sysctl},
-            {"getifaddrs",   (void *)my_getifaddrs,   (void **)&orig_getifaddrs},
-            {"_dyld_get_image_name", (void *)my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
-        };
-        rebind_symbols(reb, sizeof(reb) / sizeof(reb[0]));
+        // dyld 符号单独处理（可能不在符号表中）
+        @try {
+            struct rebinding dyldReb[] = {
+                {"_dyld_get_image_name", (void *)my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
+            };
+            rebind_symbols(dyldReb, 1);
+            NSLog(@"[libiPadSpoof] ✅ dyld hooks 已安装");
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ dyld hook 失败（可能不需要）: %@", e.reason);
+        }
 
-        // CFPreferences（MobileGestalt 键值拦截）
-        {
+        // CFPreferences hook
+        @try {
             void *cfHandle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
             if (cfHandle) {
                 orig_CFPrefsCopyAppValue = dlsym(cfHandle, "CFPreferencesCopyAppValue");
@@ -624,52 +682,75 @@ static void spoof_load(void) {
                 }
                 dlclose(cfHandle);
             }
-        }
-
-        // ── UIDevice 方法 Hook ──
-        Class devCls = [UIDevice class];
-        hook_objc_method(devCls, @selector(model),                    @selector(spoof_model));
-        hook_objc_method(devCls, @selector(localizedModel),           @selector(spoof_localizedModel));
-        hook_objc_method(devCls, @selector(userInterfaceIdiom),       @selector(spoof_userInterfaceIdiom));
-        hook_objc_method(devCls, @selector(systemName),               @selector(spoof_systemName));
-        hook_objc_method(devCls, @selector(systemVersion),            @selector(spoof_systemVersion));
-        hook_objc_method(devCls, @selector(name),                     @selector(spoof_name));
-        hook_objc_method(devCls, @selector(identifierForVendor),      @selector(spoof_identifierForVendor));
-
-        // UIDevice.currentDevice 类方法
-        Method cm = class_getClassMethod(devCls, @selector(currentDevice));
-        Method cn = class_getClassMethod(devCls, @selector(spoof_currentDevice));
-        if (cm && cn) method_exchangeImplementations(cm, cn);
-
-        // ── NSProcessInfo ──
-        hook_objc_method([NSProcessInfo class],
-                         @selector(operatingSystemVersionString),
-                         @selector(spoof_operatingSystemVersionString));
-        hook_objc_method([NSProcessInfo class],
-                         @selector(operatingSystemVersion),
-                         @selector(spoof_operatingSystemVersion));
-
-        // ── NSMutableURLRequest（UA） ──
-        hook_objc_method([NSMutableURLRequest class],
-                         @selector(setValue:forHTTPHeaderField:),
-                         @selector(spoof_setValue:forHTTPHeaderField:));
-
-        // ── WKWebView customUserAgent ──
-        Class wkCls = NSClassFromString(@"WKWebView");
-        if (wkCls) {
-            hook_objc_method(wkCls, @selector(customUserAgent), @selector(spoof_customUserAgent));
-        }
-
-        // ── CTTelephonyNetworkInfo（蜂窝隐藏） ──
-        hook_telephony_if_available();
-
-        // ── 后台保活心跳 ──
-        start_heartbeat();
-
-        NSLog(@"[libiPadSpoof] ✅ 增强版已加载 (enabled=%d, product=%@, idfv=%@)",
-              g_enabled, g_productType, [derive_ipad_idfv() substringToIndex:8]);
+            NSLog(@"[libiPadSpoof] ✅ CFPreferences hooks 已安装");
         } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ❌ 初始化异常: %@ %@", e.name, e.reason);
+            NSLog(@"[libiPadSpoof] ⚠️ CFPreferences hooks 失败: %@", e.reason);
         }
+
+        // ── 第四步：ObjC Method Swizzling（每个类独立 try）──
+        @try {
+            Class devCls = [UIDevice class];
+            hook_objc_method(devCls, @selector(model),                    @selector(spoof_model));
+            hook_objc_method(devCls, @selector(localizedModel),           @selector(spoof_localizedModel));
+            hook_objc_method(devCls, @selector(userInterfaceIdiom),       @selector(spoof_userInterfaceIdiom));
+            hook_objc_method(devCls, @selector(systemName),               @selector(spoof_systemName));
+            hook_objc_method(devCls, @selector(systemVersion),            @selector(spoof_systemVersion));
+            hook_objc_method(devCls, @selector(name),                     @selector(spoof_name));
+            hook_objc_method(devCls, @selector(identifierForVendor),      @selector(spoof_identifierForVendor));
+            Method cm = class_getClassMethod(devCls, @selector(currentDevice));
+            Method cn = class_getClassMethod(devCls, @selector(spoof_currentDevice));
+            if (cm && cn) method_exchangeImplementations(cm, cn);
+            NSLog(@"[libiPadSpoof] ✅ UIDevice hooks 已安装");
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ UIDevice hooks 失败: %@", e.reason);
+        }
+
+        @try {
+            hook_objc_method([NSProcessInfo class],
+                             @selector(operatingSystemVersionString),
+                             @selector(spoof_operatingSystemVersionString));
+            hook_objc_method([NSProcessInfo class],
+                             @selector(operatingSystemVersion),
+                             @selector(spoof_operatingSystemVersion));
+            NSLog(@"[libiPadSpoof] ✅ NSProcessInfo hooks 已安装");
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ NSProcessInfo hooks 失败: %@", e.reason);
+        }
+
+        @try {
+            hook_objc_method([NSMutableURLRequest class],
+                             @selector(setValue:forHTTPHeaderField:),
+                             @selector(spoof_setValue:forHTTPHeaderField:));
+            NSLog(@"[libiPadSpoof] ✅ NSMutableURLRequest UA hooks 已安装");
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ NSMutableURLRequest hooks 失败: %@", e.reason);
+        }
+
+        @try {
+            Class wkCls = NSClassFromString(@"WKWebView");
+            if (wkCls) {
+                hook_objc_method(wkCls, @selector(customUserAgent), @selector(spoof_customUserAgent));
+                NSLog(@"[libiPadSpoof] ✅ WKWebView hooks 已安装");
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ WKWebView hooks 失败: %@", e.reason);
+        }
+
+        @try {
+            hook_telephony_if_available();
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ CTTelephony hooks 失败: %@", e.reason);
+        }
+
+        // ── 第五步：延迟启动心跳（不阻塞构造函数）──
+        @try {
+            start_heartbeat_delayed();
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ⚠️ 心跳延迟启动失败: %@", e.reason);
+        }
+
+        // ── 日志（不访问 UIDevice，避免构造函数阶段崩溃）──
+        NSLog(@"[libiPadSpoof] ✅ 初始化完成 (enabled=%d, product=%@)",
+              g_enabled, g_productType);
     }
 }
