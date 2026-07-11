@@ -141,7 +141,7 @@ static void spoof_crash_handler(int sig, siginfo_t *info, void *ctx) {
 
 #pragma mark - 全局状态
 
-static BOOL       g_enabled       = YES;
+static BOOL       g_enabled       = NO;   // 初始关闭，constructor 完成 5s 后激活
 static NSString  *g_productType   = @"iPad14,2";
 static NSString  *g_idfvBase      = nil;
 static NSTimeInterval g_lastRefresh = 0;
@@ -815,7 +815,18 @@ static void spoof_load(void) {
         install_objc_hooks();
         bootlog("[CSTR] step7: ObjC hooks 已安装");
         start_heartbeat_delayed();
-        bootlogf("[CSTR] step8: 全部完成 (enabled=%d)", g_enabled);
+        bootlog("[CSTR] step8: 钩子安装完毕 (enabled=NO, 等待延迟激活)");
+
+        // 延迟 5 秒激活伪装（让微信先完成自身启动初始化，避免 iPad 代码路径导致闪退）
+        int64_t delay_ns = (int64_t)(5.0 * NSEC_PER_SEC);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay_ns),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            // 仅当没有显式关闭配置时才激活
+            if (g_enabled == NO) {
+                g_enabled = YES;
+                bootlog("[CSTR] step9: 伪装已激活 (enabled=YES)");
+            }
+        });
 
         bootlog("[CSTR] constructor 完成");
     }
