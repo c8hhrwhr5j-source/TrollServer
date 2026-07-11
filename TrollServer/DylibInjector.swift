@@ -267,6 +267,7 @@ enum DylibInjector {
             try fh.write(contentsOf: u16(0x0000))
             try fh.write(contentsOf: u16(0x0000))
             try fh.write(contentsOf: u16(0x0000))
+            try fh.write(contentsOf: u16(0x0000))  // internal file attributes (2 bytes) — 缺失此行导致 301 错误
             try fh.write(contentsOf: u32(entry.isDir ? 0x41ED0000 : 0x81A40000))
             try fh.write(contentsOf: u32(entry.offset))
             try fh.write(contentsOf: nameData)
