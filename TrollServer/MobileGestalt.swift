@@ -46,11 +46,56 @@ enum MobileGestalt {
     // MARK: - 写入
 
     /// 写入二进制 plist（指定路径）
-    /// 注意：TrollStore 环境下 `.atomic` 可能因临时文件创建权限失败，故使用直接写入。
+    /// 在 iOS 系统文件上，Data.write 常因权限/所有权失败，故使用 FileHandle + chmod 前置 + shell 兜底。
     static func writePlist(_ dict: [String: Any], to path: String) throws {
         let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .binary, options: 0)
-        // 不使用 .atomic：系统 Caches 目录可能不允许创建临时文件
-        try data.write(to: URL(fileURLWithPath: path), options: [])
+        let fm = FileManager.default
+
+        // 1) 尝试用 chmod 获取文件写权限（TrollStore 下 shell 可能以 root 运行）
+        let chmodResult = runShellCommand("chmod 666 \(path) 2>/dev/null")
+        print("[MobileGestalt] chmod 666 exit=\(chmodResult.exitCode)")
+
+        // 2) 尝试 FileHandle 直接覆盖（跳过 Data.write 的权限检查差异）
+        if fm.isWritableFile(atPath: path) {
+            do {
+                let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+                try fh.truncateFile(atOffset: 0)
+                try fh.write(contentsOf: data)
+                try fh.close()
+                print("[MobileGestalt] ✅ FileHandle 写入成功")
+                return
+            } catch {
+                print("[MobileGestalt] FileHandle 写入失败: \(error)")
+            }
+        }
+
+        // 3) 兜底：写入 /tmp 临时文件，用 cp -f 覆盖（shell 进程可能继承更高权限）
+        let tmpPath = "/tmp/MobileGestalt_\(Int.random(in: 1000...9999)).plist"
+        do {
+            try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
+            let cpResult = runShellCommand("cp -f \(tmpPath) \(path) 2>&1")
+            try? fm.removeItem(atPath: tmpPath)
+            if cpResult.exitCode == 0 {
+                print("[MobileGestalt] ✅ cp -f 覆盖成功")
+                return
+            }
+            print("[MobileGestalt] cp -f 失败: exit=\(cpResult.exitCode) out=\(cpResult.stdout)")
+        } catch {
+            print("[MobileGestalt] /tmp 写入失败: \(error)")
+        }
+
+        // 4) 最后尝试：直接 Data.write（有时在 chmod 后可用）
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: [])
+            print("[MobileGestalt] ✅ Data.write 成功")
+            return
+        } catch {
+            print("[MobileGestalt] Data.write 失败: \(error)")
+        }
+
+        throw NSError(domain: "MobileGestalt", code: 3,
+                      userInfo: [NSLocalizedDescriptionKey:
+                        "无法写入系统 MobileGestalt.plist。请检查：1) TrollStore 是否已开启'持久化/以 root 运行'；2) 文件系统是否被额外保护。"])
     }
 
     // MARK: - 备份 / 恢复
