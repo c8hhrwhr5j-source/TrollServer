@@ -54,7 +54,9 @@
 		<dict>
 			<key>CFBundleIconFiles</key>
 			<array>
+				<string>AppIcon40x40</string>
 				<string>AppIcon60x60</string>
+				<string>AppIcon76x76</string>
 			</array>
 			<key>UIPrerenderedIcon</key>
 			<false/>
@@ -62,7 +64,9 @@
 	</dict>
 	<key>CFBundleIconFiles</key>
 	<array>
+		<string>AppIcon40x40</string>
 		<string>AppIcon60x60</string>
+		<string>AppIcon76x76</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

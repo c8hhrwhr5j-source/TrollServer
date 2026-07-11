@@ -77,7 +77,7 @@ class ViewController: UIViewController {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let subtitleLabel = UILabel()
-        subtitleLabel.text = "HTTP/WebDAV · BSD Socket · 静音保活 · 智能自检"
+        subtitleLabel.text = "开发者：子平 QQ：173179642"
         subtitleLabel.font = UIFont.systemFont(ofSize: 12)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.textAlignment = .center

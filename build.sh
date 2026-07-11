@@ -461,9 +461,22 @@ if [ "$FOUND_DYLIB" = false ]; then
     echo "     搜索路径: $DYLIB_SRC"
 fi
 
-# 复制 AppIcon（如果有）
-if [ -d "$SRC_DIR/Assets.xcassets/AppIcon.appiconset" ]; then
-    cp -r "$SRC_DIR/Assets.xcassets/AppIcon.appiconset" "$APP_DIR/"
+# 复制 AppIcon — 必须放到 .app 根目录且命名匹配 Info.plist 的 CFBundleIconFiles
+# CFBundleIconFiles 指定 "AppIcon60x60" → iOS 查找 AppIcon60x60@2x.png / AppIcon60x60@3x.png
+ICONSET_DIR="$SRC_DIR/Assets.xcassets/AppIcon.appiconset"
+if [ -d "$ICONSET_DIR" ]; then
+    # 40x40 (Spotlight)
+    [ -f "$ICONSET_DIR/icon-40x40@2x.png" ] && cp "$ICONSET_DIR/icon-40x40@2x.png" "$APP_DIR/AppIcon40x40@2x.png"
+    [ -f "$ICONSET_DIR/icon-40x40@3x.png" ] && cp "$ICONSET_DIR/icon-40x40@3x.png" "$APP_DIR/AppIcon40x40@3x.png"
+    # 60x60 (主屏)
+    [ -f "$ICONSET_DIR/icon-120.png" ] && cp "$ICONSET_DIR/icon-120.png" "$APP_DIR/AppIcon60x60@2x.png"
+    [ -f "$ICONSET_DIR/icon-180.png" ] && cp "$ICONSET_DIR/icon-180.png" "$APP_DIR/AppIcon60x60@3x.png"
+    # 76x76 (iPad)
+    [ -f "$ICONSET_DIR/icon-76.png" ]  && cp "$ICONSET_DIR/icon-76.png"  "$APP_DIR/AppIcon76x76.png"
+    [ -f "$ICONSET_DIR/icon-152.png" ] && cp "$ICONSET_DIR/icon-152.png" "$APP_DIR/AppIcon76x76@2x.png"
+    echo "  ✅ AppIcon 已复制到 .app 根目录"
+else
+    echo "  ⚠️  AppIcon.appiconset 不存在，图标将为空"
 fi
 
 echo "APPL????" > "$APP_DIR/PkgInfo"
