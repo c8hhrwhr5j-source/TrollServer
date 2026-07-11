@@ -23,6 +23,13 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Install ldid (entitlements signer)
+        run: |
+          if ! command -v ldid &> /dev/null; then
+            echo "ldid not found, installing via Homebrew..."
+            brew install ldid
+          fi
+          ldid -v
       - name: Build libiPadSpoof.dylib
         run: |
           echo "Current directory: $(pwd)"

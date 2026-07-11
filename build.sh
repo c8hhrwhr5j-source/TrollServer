@@ -449,9 +449,15 @@ fi
 
 echo "APPL????" > "$APP_DIR/PkgInfo"
 
-# 提示：巨魔安装时使用此 entitlements
-echo "  ⚠️  巨魔安装时请使用以下 entitlements 签名:"
-echo "     ldid -S$SRC_DIR/TrollServer.entitlements $APP_DIR/$APP_NAME"
+# 注入 entitlements（确保 TrollStore 安装后获得 no-sandbox 等权限）
+if command -v ldid &> /dev/null; then
+    echo "  🔏 注入 entitlements..."
+    ldid -S"$SRC_DIR/TrollServer.entitlements" "$APP_DIR/$APP_NAME"
+    echo "  ✅ entitlements 已注入"
+else
+    echo "  ⚠️  ldid 未安装，请确保通过 TrollStore 安装时手动注入权限:"
+    echo "     ldid -S$SRC_DIR/TrollServer.entitlements $APP_DIR/$APP_NAME"
+fi
 
 echo "  [OK] .app Bundle 创建完成: $APP_DIR"
 
