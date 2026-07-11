@@ -241,74 +241,74 @@ enum DylibInjector {
         for entry in entries {
             let nameData = entry.name.data(using: .utf8) ?? Data()
             let nameLen = UInt16(nameData.count)
-            fh.write(Data([0x50, 0x4B, 0x01, 0x02]))
-            fh.write(u16(0x0314))
-            fh.write(u16(0x0014))
-            fh.write(u16(entry.isDir ? 0x0000 : 0x0008))
-            fh.write(u16(0x0000))
-            fh.write(u16(0x0000))
-            fh.write(u16(0x0000))
-            fh.write(u32(entry.crc))
-            fh.write(u32(entry.size))
-            fh.write(u32(entry.size))
-            fh.write(u16(nameLen))
-            fh.write(u16(0x0000))
-            fh.write(u16(0x0000))
-            fh.write(u16(0x0000))
-            fh.write(u32(entry.isDir ? 0x41ED0000 : 0x81A40000))
-            fh.write(u32(entry.offset))
-            fh.write(nameData)
+            fh.writeData(Data([0x50, 0x4B, 0x01, 0x02]))
+            fh.writeData(u16(0x0314))
+            fh.writeData(u16(0x0014))
+            fh.writeData(u16(entry.isDir ? 0x0000 : 0x0008))
+            fh.writeData(u16(0x0000))
+            fh.writeData(u16(0x0000))
+            fh.writeData(u16(0x0000))
+            fh.writeData(u32(entry.crc))
+            fh.writeData(u32(entry.size))
+            fh.writeData(u32(entry.size))
+            fh.writeData(u16(nameLen))
+            fh.writeData(u16(0x0000))
+            fh.writeData(u16(0x0000))
+            fh.writeData(u16(0x0000))
+            fh.writeData(u32(entry.isDir ? 0x41ED0000 : 0x81A40000))
+            fh.writeData(u32(entry.offset))
+            fh.writeData(nameData)
         }
 
         let cdSize = UInt32(fh.offsetInFile) - cdOffset
         let numEntries = UInt16(entries.count)
-        fh.write(Data([0x50, 0x4B, 0x05, 0x06]))
-        fh.write(u16(0x0000))
-        fh.write(u16(0x0000))
-        fh.write(u16(numEntries))
-        fh.write(u16(numEntries))
-        fh.write(u32(cdSize))
-        fh.write(u32(cdOffset))
-        fh.write(u16(0x0000))
+        fh.writeData(Data([0x50, 0x4B, 0x05, 0x06]))
+        fh.writeData(u16(0x0000))
+        fh.writeData(u16(0x0000))
+        fh.writeData(u16(numEntries))
+        fh.writeData(u16(numEntries))
+        fh.writeData(u32(cdSize))
+        fh.writeData(u32(cdOffset))
+        fh.writeData(u16(0x0000))
     }
 
     private static func writeLocalFileHeader(fh: FileHandle, name: Data, nameLen: UInt16, crc: UInt32, size: UInt32, flags: UInt16) {
-        fh.write(Data([0x50, 0x4B, 0x03, 0x04]))
-        fh.write(u16(0x0014))
-        fh.write(u16(flags))
-        fh.write(u16(0x0000))
-        fh.write(u16(0x0000))
-        fh.write(u16(0x0000))
-        fh.write(u32(crc))
-        fh.write(u32(size))
-        fh.write(u32(size))
-        fh.write(u16(nameLen))
-        fh.write(u16(0x0000))
-        fh.write(name)
+        fh.writeData(Data([0x50, 0x4B, 0x03, 0x04]))
+        fh.writeData(u16(0x0014))
+        fh.writeData(u16(flags))
+        fh.writeData(u16(0x0000))
+        fh.writeData(u16(0x0000))
+        fh.writeData(u16(0x0000))
+        fh.writeData(u32(crc))
+        fh.writeData(u32(size))
+        fh.writeData(u32(size))
+        fh.writeData(u16(nameLen))
+        fh.writeData(u16(0x0000))
+        fh.writeData(name)
     }
 
     private static func writeFileEntry(fh: FileHandle, sourcePath: String, name: Data, nameLen: UInt16) -> (crc: UInt32, size: UInt32) {
         writeLocalFileHeader(fh: fh, name: name, nameLen: nameLen, crc: 0, size: 0, flags: 0x0008)
         guard let sourceFH = try? FileHandle(forReadingFrom: URL(fileURLWithPath: sourcePath)) else { return (0, 0) }
 
-        var crc: UInt = 0
+        var crc: CUnsignedLong = 0
         var size: UInt32 = 0
         while true {
             let chunk = sourceFH.readData(ofLength: 1024 * 1024)
             if chunk.isEmpty { break }
             chunk.withUnsafeBytes { bytes in
                 if let baseAddress = bytes.bindMemory(to: UInt8.self).baseAddress {
-                    crc = zlib.crc32(crc, baseAddress, UInt(chunk.count))
+                    crc = zlib.crc32(crc, baseAddress, UInt32(chunk.count))
                 }
             }
-            fh.write(chunk)
+            fh.writeData(chunk)
             size += UInt32(chunk.count)
         }
         sourceFH.closeFile()
 
-        fh.write(u32(UInt32(crc)))
-        fh.write(u32(size))
-        fh.write(u32(size))
+        fh.writeData(u32(UInt32(crc)))
+        fh.writeData(u32(size))
+        fh.writeData(u32(size))
         return (UInt32(crc), size)
     }
 
