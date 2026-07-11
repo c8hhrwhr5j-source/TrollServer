@@ -43,6 +43,9 @@ jobs:
           if [ -f "build.sh" ]; then
             chmod +x build.sh
             ./build.sh
+            if [ -f "build/TrollServer.ipa" ]; then
+              cp "build/TrollServer.ipa" "TrollServer.ipa"
+            fi
           elif [ -d "TrollServer.xcodeproj" ]; then
             xcodebuild -project TrollServer.xcodeproj -scheme TrollServer -configuration Release -sdk iphoneos CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
             mkdir -p Payload
@@ -59,9 +62,9 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TrollServer-ipa
+          name: TrollServer-artifacts
           path: |
-            *.ipa
+            TrollServer.ipa
             spoof/libiPadSpoof.dylib
 
       - name: Create Release
