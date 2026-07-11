@@ -48,7 +48,7 @@ jobs:
             exit 1
           fi
           chmod +x build_spoof.sh build_testboot.sh build_purec.sh
-          echo "=== 编译 libiPadSpoof ==="
+          echo "=== 编译 libiPadSpoof (3变体: 完整/无UI/弱链UI) ==="
           ./build_spoof.sh
           echo "=== 编译测试探针 ==="
           ./build_testboot.sh
@@ -96,10 +96,15 @@ jobs:
           body: |
             Auto build artifacts:
             - TrollServer.ipa (TrollStore install package)
-            - libiPadSpoof.dylib (主伪装 dylib)
+            - libiPadSpoof.dylib (完整版: Foundation + UIKit 强链)
+            - libiPadSpoof_noUI.dylib (诊断版: 仅 Foundation，无UIKit)
+            - libiPadSpoof_weakUI.dylib (诊断版: Foundation + UIKit 弱链)
             - libTestBoot.dylib (Foundation 探针)
             - libPureC_arm64.dylib (纯C arm64 探针)
             - libPureC_arm64e.dylib (纯C arm64e 探针)
+
+            诊断步骤: 先测 noUI → 再测 weakUI → 最后测完整版
+            日志: Filza 搜索 libiPadSpoof_boot.log (在微信沙箱 tmp 目录下)
           files: |
             TrollServer.ipa
             spoof/*.dylib

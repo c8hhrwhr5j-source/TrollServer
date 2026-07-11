@@ -43,7 +43,9 @@
 #import <sys/wait.h>
 #import <stdarg.h>
 #import <Foundation/Foundation.h>
+#ifndef NO_UIKIT
 #import <UIKit/UIKit.h>
+#endif
 #import <objc/runtime.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
@@ -58,14 +60,25 @@
 
 #pragma mark - 诊断日志（原始 POSIX write，不依赖任何 ObjC/UIKit）
 
-// 查看方法：Filza 打开 /tmp/libiPadSpoof_boot.log
-// 或用 SSH: cat /tmp/libiPadSpoof_boot.log
-// 备用路径: /var/mobile/Documents/libiPadSpoof_boot.log
+// 日志优先写入进程 $TMPDIR（微信沙箱内 /tmp 不可写，$TMPDIR 才是沙箱 tmp）
+// Filza 查看: /var/mobile/Containers/Data/Application/<WeChat>/tmp/libiPadSpoof_boot.log
 static void bootlog(const char *msg) {
-    // 尝试主路径 /tmp
-    int fd = open("/tmp/libiPadSpoof_boot.log",
-                  O_WRONLY|O_CREAT|O_APPEND, 0644);
-    // 若 /tmp 不可写，尝试 /var/mobile/Documents
+    // 路径1: $TMPDIR（进程沙箱 tmp 目录，一定可写）
+    const char *tmpdir = getenv("TMPDIR");
+    char path[512];
+    if (tmpdir) {
+        snprintf(path, sizeof(path), "%slibiPadSpoof_boot.log", tmpdir);
+    } else {
+        // 降级：$HOME/tmp/
+        const char *home = getenv("HOME");
+        if (home) {
+            snprintf(path, sizeof(path), "%s/tmp/libiPadSpoof_boot.log", home);
+        } else {
+            snprintf(path, sizeof(path), "/tmp/libiPadSpoof_boot.log");
+        }
+    }
+    int fd = open(path, O_WRONLY|O_CREAT|O_APPEND, 0644);
+    // 备用: /var/mobile/Documents
     if (fd < 0) {
         fd = open("/var/mobile/Documents/libiPadSpoof_boot.log",
                   O_WRONLY|O_CREAT|O_APPEND, 0644);
@@ -75,7 +88,7 @@ static void bootlog(const char *msg) {
         write(fd, "\n", 1);
         close(fd);
     }
-    // 同时写 stderr，用设备日志也可看到（Xcode → Device Logs 或 idevicesyslog）
+    // 同时写 stderr（设备日志可见: idevicesyslog 或 Xcode Console）
     write(STDERR_FILENO, msg, strlen(msg));
     write(STDERR_FILENO, "\n", 1);
 }
@@ -384,6 +397,7 @@ static CFPropertyListRef my_CFPrefsCopyAppValue(CFStringRef key, CFStringRef app
 
 #pragma mark - Objective-C 方法 Hook
 
+#ifndef NO_UIKIT
 // ──── UIDevice ────
 @interface UIDevice (SpoofExt)
 - (NSString *)spoof_model;
@@ -415,12 +429,10 @@ static CFPropertyListRef my_CFPrefsCopyAppValue(CFStringRef key, CFStringRef app
 
 - (NSString *)spoof_systemName {
     refresh_config_if_needed();
-    // "iPhone OS" → "iPadOS"
     return g_enabled ? @"iPadOS" : [self spoof_systemName];
 }
 
 - (NSString *)spoof_systemVersion {
-    // 系统版本号不变（iOS 17 和 iPadOS 17 版本号相同）
     return [self spoof_systemVersion];
 }
 
@@ -438,11 +450,11 @@ static CFPropertyListRef my_CFPrefsCopyAppValue(CFStringRef key, CFStringRef app
 }
 
 + (UIDevice *)spoof_currentDevice {
-    // 这个类方法比较特殊，保持返回真实实例，由实例方法处理伪装
     return [self spoof_currentDevice];
 }
 
 @end
+#endif // NO_UIKIT
 
 
 // ──── NSProcessInfo ────
@@ -620,6 +632,7 @@ static void hook_objc_method(Class cls, SEL orig, SEL spoof) {
 /// 延迟初始化：等微信/QQ 自身启动完成后再安装 ObjC hooks
 /// 避免 constructor 阶段 hook 与 App 初始化流程冲突导致闪退
 static void install_objc_hooks(void) {
+#ifndef NO_UIKIT
     @try {
         // ── UIDevice ──
         Class devCls = [UIDevice class];
@@ -634,6 +647,7 @@ static void install_objc_hooks(void) {
     } @catch (NSException *e) {
         bootlogf("[DELAY] UIDevice hooks 失败: %s", [e.reason UTF8String]);
     }
+#endif
 
     @try {
         hook_objc_method([NSProcessInfo class],
