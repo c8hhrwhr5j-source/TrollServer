@@ -179,11 +179,25 @@ static void _rebind_symbols_for_image(const struct mach_header *header,
 int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) {
   int retval = prepend_rebindings(&_rebindings_head, rebindings, rebindings_nel);
   if (retval < 0) { return retval; }
-  if (_rebindings_head->next) {
-    rebind_symbols_for_image(_rebindings_head, _dyld_get_image_header(0),
-                             _dyld_get_image_vmaddr_slide(0));
-  } else {
-    _dyld_register_func_for_add_image(_rebind_symbols_for_image);
+  // 遍历当前所有已加载镜像进行符号重绑定
+  // 注意：不使用 _dyld_register_func_for_add_image (在 dyld4/iOS 15+ 会 SIGSEGV)
+  // 因为 hook 目标 (libSystem 函数) 在 constructor 阶段已全部加载完毕
+  uint32_t c = _dyld_image_count();
+  for (uint32_t i = 0; i < c; i++) {
+    rebind_symbols_for_image(_rebindings_head,
+                             _dyld_get_image_header(i),
+                             _dyld_get_image_vmaddr_slide(i));
   }
+  return 0;
+}
+
+int rebind_symbols_image(void *header, intptr_t slide,
+                         struct rebinding rebindings[], size_t rebindings_nel) {
+  struct rebindings_entry *entry = NULL;
+  int retval = prepend_rebindings(&entry, rebindings, rebindings_nel);
+  if (retval < 0) { return retval; }
+  rebind_symbols_for_image(entry, (const struct mach_header *)header, slide);
+  free(entry->rebindings);
+  free(entry);
   return 0;
 }
