@@ -755,7 +755,15 @@ class TrollHTTPServer {
     }
 
     /// GET  /api/gestalt → 读取当前 gestalt 状态
-    /// POST /api/gestalt → 修改 gestalt，body: {"DeviceClass":"iPad","MarketingName":"iPad mini"}
+    /// POST /api/gestalt → 一键开关 iPad 模式 | 自定义键值修改
+    ///
+    /// **一键模式**（推荐）：
+    ///   {"mode": "ipad"}                          → 启用 iPad 伪装（默认 iPad14,2）
+    ///   {"mode": "ipad", "productType": "iPad14,3"} → 指定型号
+    ///   {"mode": "iphone"}                        → 恢复原始 iPhone
+    ///
+    /// **自定义键值模式**（兼容旧版）：
+    ///   {"DeviceClass":"iPad","MarketingName":"iPad mini"}
     private func handleGestalt(_ req: HTTPRequest) -> HTTPResponse {
         // 查找 gestalt plist 文件 (优先 FileManager 直接探测固定路径, shell 受限时更可靠)
         guard let plistPath = discoverGestaltPlist() else {
@@ -784,6 +792,9 @@ class TrollHTTPServer {
                 }
                 if !extra.isEmpty { info["CacheExtra"] = extra }
             }
+            // 附加 MobileGestalt 状态
+            info["isIPadMode"] = MobileGestalt.isIPadModeActive()
+            if let pt = MobileGestalt.currentProductType() { info["currentProductType"] = pt }
 
             guard let json = try? JSONSerialization.data(withJSONObject: info, options: .prettyPrinted) else {
                 return .internalError()
@@ -791,12 +802,46 @@ class TrollHTTPServer {
             return .ok(json, contentType: "application/json")
         }
 
-        // POST: 修改（智能键名匹配，适配不同 iOS 版本）
+        // POST: 支持两种模式
         guard let bodyStr = String(data: req.body, encoding: .utf8),
               let jsonData = bodyStr.data(using: .utf8),
-              let patches = try? JSONSerialization.jsonObject(with: jsonData) as? [String: String],
-              !patches.isEmpty else {
-            return HTTPResponse(statusCode: 400, headers: [:], body: "body 需要 JSON, 例: {\"DeviceClass\":\"iPad\"}".data(using: .utf8)!)
+              let payload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            return HTTPResponse(statusCode: 400, headers: [:], body: "body 需要 JSON".data(using: .utf8)!)
+        }
+
+        // ── 一键模式：mode 字段 ──
+        if let mode = payload["mode"] as? String {
+            switch mode {
+            case "ipad":
+                let pt = payload["productType"] as? String ?? "iPad14,2"
+                let name = MobileGestalt.marketingName(for: pt)
+                switch MobileGestalt.enableIPadMode(productType: pt, marketingName: name) {
+                case .success(let msg):
+                    let body = "{\"result\":\"ok\",\"message\":\"\(msg)\",\"productType\":\"\(pt)\"}"
+                    return HTTPResponse(statusCode: 200, headers: [:], body: body.data(using: .utf8)!)
+                case .failure(let err):
+                    let body = "{\"result\":\"error\",\"message\":\"\(err.localizedDescription)\"}"
+                    return HTTPResponse(statusCode: 500, headers: [:], body: body.data(using: .utf8)!)
+                }
+            case "iphone":
+                switch MobileGestalt.disableIPadMode() {
+                case .success(let msg):
+                    let body = "{\"result\":\"ok\",\"message\":\"\(msg)\"}"
+                    return HTTPResponse(statusCode: 200, headers: [:], body: body.data(using: .utf8)!)
+                case .failure(let err):
+                    let body = "{\"result\":\"error\",\"message\":\"\(err.localizedDescription)\"}"
+                    return HTTPResponse(statusCode: 500, headers: [:], body: body.data(using: .utf8)!)
+                }
+            default:
+                return HTTPResponse(statusCode: 400, headers: [:],
+                    body: "无效 mode，可选: ipad | iphone".data(using: .utf8)!)
+            }
+        }
+
+        // ── 自定义键值模式（兼容旧版 JSON: {"key":"value"}）──
+        guard let patches = payload as? [String: String], !patches.isEmpty else {
+            return HTTPResponse(statusCode: 400, headers: [:],
+                body: "请使用一键模式 {\"mode\":\"ipad\"} 或自定义键值 {\"DeviceClass\":\"iPad\"}".data(using: .utf8)!)
         }
 
         // 备份原始文件

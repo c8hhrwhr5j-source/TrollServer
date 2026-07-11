@@ -503,16 +503,64 @@ class ViewController: UIViewController {
     // ===================== 设备伪装操作 =====================
 
     @objc private func setToiPad() {
+        toiPadBtn.isEnabled = false
+        toiPhoneBtn.isEnabled = false
+        gestaltStatusLabel.text = "⏳ 正在修改 MobileGestalt..."
+        gestaltStatusLabel.textColor = .secondaryLabel
+
+        let model = SpoofConfig.productType
+        let marketingName = MobileGestalt.marketingName(for: model)
+
+        // 1. 写入 dylib 共享配置（给注入 QQ/微信 的 dylib 用）
         SpoofConfig.isEnabled = true
-        SpoofConfig.productType = SpoofConfig.defaultProductType
-        updateSpoofStatus()
-        showGestaltResult("✅ 已切换为 iPad（\(SpoofConfig.productType)）\n重启 QQ / 微信 后生效", .systemGreen)
+
+        // 2. 直接修改 MobileGestalt.plist（系统级, 影响所有 App）
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            let result = MobileGestalt.enableIPadMode(productType: model, marketingName: marketingName)
+
+            DispatchQueue.main.async {
+                self.toiPadBtn.isEnabled = true
+                self.toiPhoneBtn.isEnabled = true
+                self.updateSpoofStatus()
+
+                switch result {
+                case .success(let msg):
+                    self.showGestaltResult("\(msg)\n⚠️ 建议重启手机使变更完全生效", .systemGreen)
+                case .failure(let err):
+                    self.showGestaltResult("❌ MobileGestalt 修改失败:\n\(err.localizedDescription)\n\n🔹 dylib 配置已写入(注入的 App 仍生效)", .red)
+                }
+            }
+        }
     }
 
     @objc private func setToiPhone() {
+        toiPadBtn.isEnabled = false
+        toiPhoneBtn.isEnabled = false
+        gestaltStatusLabel.text = "⏳ 正在恢复 MobileGestalt..."
+        gestaltStatusLabel.textColor = .secondaryLabel
+
+        // 1. 关闭 dylib 共享配置
         SpoofConfig.isEnabled = false
-        updateSpoofStatus()
-        showGestaltResult("✅ 已关闭伪装（恢复真实 iPhone）\n重启 QQ / 微信 后生效", .systemGreen)
+
+        // 2. 清除 MobileGestalt.plist 中的 iPad 字段
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            let result = MobileGestalt.disableIPadMode()
+
+            DispatchQueue.main.async {
+                self.toiPadBtn.isEnabled = true
+                self.toiPhoneBtn.isEnabled = true
+                self.updateSpoofStatus()
+
+                switch result {
+                case .success(let msg):
+                    self.showGestaltResult("\(msg)\n⚠️ 建议重启手机使变更完全生效", .systemGreen)
+                case .failure(let err):
+                    self.showGestaltResult("❌ 恢复失败:\n\(err.localizedDescription)", .red)
+                }
+            }
+        }
     }
 
     @objc private func openSpoofSettings() {
@@ -522,12 +570,24 @@ class ViewController: UIViewController {
     }
 
     private func updateSpoofStatus() {
-        let on = SpoofConfig.isEnabled
+        let dylibOn = SpoofConfig.isEnabled
         let model = SpoofConfig.productType
-        gestaltStatusLabel.text = on
-            ? "当前：伪装 iPad（\(model)）"
-            : "当前：未伪装（真实设备）"
-        gestaltStatusLabel.textColor = on ? .systemIndigo : .secondaryLabel
+        let mgOn = MobileGestalt.isIPadModeActive()
+        let mgModel = MobileGestalt.currentProductType() ?? "?"
+
+        if dylibOn && mgOn {
+            gestaltStatusLabel.text = "当前：已伪装 iPad（dylib: \(model) | Gestalt: \(mgModel)）"
+            gestaltStatusLabel.textColor = .systemIndigo
+        } else if dylibOn {
+            gestaltStatusLabel.text = "当前：dylib 伪装 iPad（\(model)）\nMobileGestalt 未修改"
+            gestaltStatusLabel.textColor = .systemOrange
+        } else if mgOn {
+            gestaltStatusLabel.text = "当前：MobileGestalt 伪装 iPad（\(mgModel)）\ndylib 关闭"
+            gestaltStatusLabel.textColor = .systemOrange
+        } else {
+            gestaltStatusLabel.text = "当前：未伪装（真实设备）"
+            gestaltStatusLabel.textColor = .secondaryLabel
+        }
     }
 
     /// ⚠️ 已废弃：iOS 16+ 沙盒下 MobileGestalt 不可写，改用 libiPadSpoof.dylib（见 spoof/README.md）
