@@ -187,33 +187,39 @@ enum DylibInjector {
             return .failure(.packFailed("移动 App 失败: \(error)"))
         }
 
-        // 8. 打包为 IPA（zip）
+        // 8. 尝试打包为 IPA（zip）— 若 zip 不可用则直接返回 .app 目录
         let ipaPath = "\(tmpDir)/\(execName)_injected.ipa"
-        let zipResult = runShellCommand("cd '\(tmpDir)' && /usr/bin/zip -qr '\(ipaPath)' Payload 2>&1")
-        if zipResult.exitCode != 0 {
-            log("❌ 打包 IPA 失败 (zip exit=\(zipResult.exitCode)): \(zipResult.stdout)")
-            return .failure(.packFailed("zip exit=\(zipResult.exitCode): \(zipResult.stdout)"))
+        let zipResult = runShellCommand("cd '\(tmpDir)' && zip -qr '\(ipaPath)' Payload 2>&1")
+        if zipResult.exitCode == 0 {
+            log("✅ IPA 已打包: \(ipaPath)")
+            return .success(URL(fileURLWithPath: ipaPath))
         }
-        log("✅ IPA 已打包: \(ipaPath)")
 
-        return .success(URL(fileURLWithPath: ipaPath))
+        // zip 失败：直接返回 .app 目录，通过系统分享让 TrollStore 安装
+        log("⚠️ zip 打包失败 (exit=\(zipResult.exitCode)): \(zipResult.stdout)")
+        log("📂 直接返回 .app 目录")
+        let appURL = URL(fileURLWithPath: "\(payloadDir)/\(appName)")
+        return .success(appURL)
     }
 
     // MARK: - TrollStore 安装
 
-    /// 通过 TrollStore URL scheme 安装 IPA
-    static func openTrollStoreInstall(ipaURL: URL) {
-        // TrollStore 支持 trollstore://install?url=file:///path/to.ipa
-        let encodedPath = ipaURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let url = URL(string: "trollstore://install?url=\(encodedPath)"),
-           UIApplication.shared.canOpenURL(url) {
-            UIApplication.shared.open(url)
-        } else {
-            // 备用：分享 IPA 文件
-            let activityVC = UIActivityViewController(activityItems: [ipaURL], applicationActivities: nil)
-            if let root = UIApplication.shared.keyWindow?.rootViewController {
-                root.present(activityVC, animated: true)
+    /// 通过 TrollStore URL scheme 安装 IPA，若无法跳转则通过系统分享
+    static func openTrollStoreInstall(appURL: URL) {
+        // 如果是 IPA 文件，先尝试 trollstore:// URL scheme
+        if appURL.pathExtension == "ipa" {
+            let encodedPath = appURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            if let url = URL(string: "trollstore://install?url=\(encodedPath)"),
+               UIApplication.shared.canOpenURL(url) {
+                UIApplication.shared.open(url)
+                return
             }
+        }
+
+        // 备选：分享 .app 目录或 IPA 文件，用户在分享菜单中选择 TrollStore
+        let activityVC = UIActivityViewController(activityItems: [appURL], applicationActivities: nil)
+        if let root = UIApplication.shared.keyWindow?.rootViewController {
+            root.present(activityVC, animated: true)
         }
     }
 

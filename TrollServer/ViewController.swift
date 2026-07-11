@@ -78,7 +78,7 @@ class ViewController: UIViewController {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let subtitleLabel = UILabel()
-        subtitleLabel.text = "开发者：子平 QQ：173179642"
+        subtitleLabel.text = "开发者:子平  QQ:173179642"
         subtitleLabel.font = UIFont.systemFont(ofSize: 12)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.textAlignment = .center
@@ -768,7 +768,7 @@ class ViewController: UIViewController {
     @objc private func installTapped(_ sender: UIButton) {
         let idx = sender.tag
         guard idx < injectIPAURLs.count, let ipaURL = injectIPAURLs[idx] else { return }
-        DylibInjector.openTrollStoreInstall(ipaURL: ipaURL)
+        DylibInjector.openTrollStoreInstall(appURL: ipaURL)
     }
 
     @objc private func restoreTapped(_ sender: UIButton) {
