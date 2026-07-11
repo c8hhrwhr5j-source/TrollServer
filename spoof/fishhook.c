@@ -64,27 +64,27 @@ static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
                                            intptr_t slide,
                                            nlist_t *symtab,
                                            char *strtab,
-                                           uint32_t *indirect_symtab,
+                                           unsigned int32_t *indirect_symtab,
                                            bool isConstSeg) {
   // iOS 15+ 把 __nl_symbol_ptr / __la_symbol_ptr 放在只读的 __DATA_CONST 段，
   // 必须 mprotect 才能写入。这里以“所在段是否为 __DATA_CONST”为准。
   const bool isDataConst = isConstSeg;
-  uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
-  void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
-  for (uint i = 0; i < section->size / sizeof(void *); i++) {
-    uint32_t symtab_index = indirect_symbol_indices[i];
+  unsigned int32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
+  void **indirect_symbol_bindings = (void **)((unsigned intptr_t)slide + section->addr);
+  for (unsigned int i = 0; i < section->size / sizeof(void *); i++) {
+    unsigned int32_t symtab_index = indirect_symbol_indices[i];
     if (symtab_index == INDIRECT_SYMBOL_ABS ||
         symtab_index == INDIRECT_SYMBOL_LOCAL ||
-        symtab_index == (uint32_t)INDIRECT_SYMBOL_LOCAL) {
+        symtab_index == (unsigned int32_t)INDIRECT_SYMBOL_LOCAL) {
       continue;
     }
-    uint32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
+    unsigned int32_t strtab_offset = symtab[symtab_index].n_un.n_strx;
     char *symbol_name = strtab + strtab_offset;
     if (symbol_name[0] != '_') { continue; }
 
     struct rebindings_entry *cur = rebindings;
     while (cur) {
-      for (uint j = 0; j < cur->rebindings_nel; j++) {
+      for (unsigned int j = 0; j < cur->rebindings_nel; j++) {
         if (strcmp(&symbol_name[1], cur->rebindings[j].name) == 0) {
           void *orig = indirect_symbol_bindings[i];
           if (cur->rebindings[j].replaced != NULL &&
@@ -119,8 +119,8 @@ static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
   struct symtab_command *symtab_cmd = NULL;
   struct dysymtab_command *dysymtab_cmd = NULL;
 
-  uintptr_t cur = (uintptr_t)header + sizeof(mach_header_t);
-  for (uint i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
+  unsigned intptr_t cur = (unsigned intptr_t)header + sizeof(mach_header_t);
+  for (unsigned int i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
     cur_seg_cmd = (segment_command_t *)cur;
     if (cur_seg_cmd->cmd == LC_SEGMENT_ARCH_DEPENDENT) {
       if (strcmp(cur_seg_cmd->segname, SEG_LINKEDIT) == 0) {
@@ -138,22 +138,22 @@ static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
     return;
   }
 
-  uintptr_t linkedit_base =
-      (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
+  unsigned intptr_t linkedit_base =
+      (unsigned intptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
   nlist_t *symtab = (nlist_t *)(linkedit_base + symtab_cmd->symoff);
   char *strtab = (char *)(linkedit_base + symtab_cmd->stroff);
-  uint32_t *indirect_symtab =
-      (uint32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
+  unsigned int32_t *indirect_symtab =
+      (unsigned int32_t *)(linkedit_base + dysymtab_cmd->indirectsymoff);
 
-  cur = (uintptr_t)header + sizeof(mach_header_t);
-  for (uint i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
+  cur = (unsigned intptr_t)header + sizeof(mach_header_t);
+  for (unsigned int i = 0; i < header->ncmds; i++, cur += cur_seg_cmd->cmdsize) {
     cur_seg_cmd = (segment_command_t *)cur;
     if (cur_seg_cmd->cmd == LC_SEGMENT_ARCH_DEPENDENT) {
       if (strcmp(cur_seg_cmd->segname, SEG_DATA) != 0 &&
           strcmp(cur_seg_cmd->segname, SEG_DATA_CONST) != 0) {
         continue;
       }
-      for (uint j = 0; j < cur_seg_cmd->nsects; j++) {
+      for (unsigned int j = 0; j < cur_seg_cmd->nsects; j++) {
         section_t *sect =
             (section_t *)(cur + sizeof(segment_command_t)) + j;
         if ((sect->flags & SECTION_TYPE) == S_LAZY_SYMBOL_POINTERS) {
