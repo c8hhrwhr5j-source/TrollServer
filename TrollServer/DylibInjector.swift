@@ -212,11 +212,19 @@ enum DylibInjector {
 
         var entries: [(name: String, size: UInt32, crc: UInt32, offset: UInt32, isDir: Bool)] = []
 
+        // 写入 Payload 目录条目（ZIP 根目录必须包含 Payload/）
+        let payloadEntryName = "Payload/"
+        let payloadEntryData = payloadEntryName.data(using: .utf8) ?? Data()
+        let payloadEntryLen = UInt16(payloadEntryData.count)
+        let payloadOffset = UInt32(try fh.offsetInFile)
+        try writeLocalFileHeader(fh: fh, name: payloadEntryData, nameLen: payloadEntryLen, crc: 0, size: 0, flags: 0)
+        entries.append((name: payloadEntryName, size: 0, crc: 0, offset: payloadOffset, isDir: true))
+
         func traverse(dir: String, prefix: String) throws {
             guard let items = try? fm.contentsOfDirectory(atPath: dir) else { return }
             for item in items {
                 let path = "\(dir)/\(item)"
-                let name = prefix.isEmpty ? item : "\(prefix)/\(item)"
+                let name = prefix + "/" + item
                 var isDir: ObjCBool = false
                 fm.fileExists(atPath: path, isDirectory: &isDir)
 
@@ -225,8 +233,12 @@ enum DylibInjector {
                 let offset = UInt32(try fh.offsetInFile)
 
                 if isDir.boolValue {
-                    try writeLocalFileHeader(fh: fh, name: nameData, nameLen: nameLen, crc: 0, size: 0, flags: 0)
-                    entries.append((name: name, size: 0, crc: 0, offset: offset, isDir: true))
+                    // 目录条目必须以 "/" 结尾
+                    let dirName = name + "/"
+                    let dirNameData = dirName.data(using: .utf8) ?? Data()
+                    let dirNameLen = UInt16(dirNameData.count)
+                    try writeLocalFileHeader(fh: fh, name: dirNameData, nameLen: dirNameLen, crc: 0, size: 0, flags: 0)
+                    entries.append((name: dirName, size: 0, crc: 0, offset: offset, isDir: true))
                     try traverse(dir: path, prefix: name)
                 } else {
                     let (crc, size) = try writeFileEntry(fh: fh, sourcePath: path, name: nameData, nameLen: nameLen)
@@ -235,7 +247,7 @@ enum DylibInjector {
             }
         }
 
-        try traverse(dir: sourceDir, prefix: "")
+        try traverse(dir: sourceDir, prefix: "Payload")
 
         let cdOffset = UInt32(try fh.offsetInFile)
         for entry in entries {
