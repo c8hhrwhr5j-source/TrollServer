@@ -55,11 +55,10 @@
 
 #pragma mark - 全局状态
 
-static BOOL       g_enabled       = YES;  // 默认开启：注入即生效
+static BOOL       g_enabled       = YES;
 static NSString  *g_productType   = @"iPad14,2";
-static NSString  *g_idfvBase      = nil;   // 缓存的 iPad 风格 IDFV（只生成一次，保持稳定）
+static NSString  *g_idfvBase      = nil;
 static NSTimeInterval g_lastRefresh = 0;
-static dispatch_queue_t g_configQueue = NULL;  // 配置读写串行队列
 
 #pragma mark - 辅助工具
 
@@ -111,35 +110,13 @@ static void apply_config(NSDictionary *cfg) {
     }
 }
 
-/// 通过本地 HTTP 从 TrollServer daemon 读取配置
-static NSDictionary *fetch_config_via_http(void) {
-    @autoreleasepool {
-        NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:51111/api/spoof"];
-        if (!url) return nil;
-        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-        req.HTTPMethod = @"GET";
-        req.timeoutInterval = 1.5;
-
-        // 使用 NSURLSession 同步（dispatch semaphore 阻塞）
-        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-        __block NSData *resultData = nil;
-        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-        [[session dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            resultData = data;
-            dispatch_semaphore_signal(sem);
-        }] resume];
-        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)));
-        if (!resultData) return nil;
-        return [NSJSONSerialization JSONObjectWithData:resultData options:0 error:nil];
-    }
-}
-
 static void refresh_config_if_needed(void) {
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
     if (now - g_lastRefresh < 30.0) return;
     g_lastRefresh = now;
 
+    // 只读本地 plist（TrollServer daemon 每次保存配置时写入）
+    // 不在构造函数阶段做阻塞 HTTP 请求，避免网络栈未初始化导致崩溃
     NSArray *paths = @[
         @"/var/mobile/Library/Preferences/com.trollserver.spoof.plist",
         @"/var/mobile/.trollserver_spoof.plist"
@@ -148,7 +125,7 @@ static void refresh_config_if_needed(void) {
         NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
         if (d) { apply_config(d); return; }
     }
-    apply_config(fetch_config_via_http());
+    // 无配置文件 → 使用默认值（g_enabled=YES, productType=iPad14,2）
 }
 
 #pragma mark - C 函数 Hook
@@ -620,7 +597,8 @@ static void hook_objc_method(Class cls, SEL orig, SEL spoof) {
 __attribute__((constructor))
 static void spoof_load(void) {
     @autoreleasepool {
-        refresh_config_if_needed();
+        @try {
+            refresh_config_if_needed();
 
         // ── C 函数 Hook（fishhook） ──
         struct rebinding reb[] = {
@@ -690,5 +668,8 @@ static void spoof_load(void) {
 
         NSLog(@"[libiPadSpoof] ✅ 增强版已加载 (enabled=%d, product=%@, idfv=%@)",
               g_enabled, g_productType, [derive_ipad_idfv() substringToIndex:8]);
+        } @catch (NSException *e) {
+            NSLog(@"[libiPadSpoof] ❌ 初始化异常: %@ %@", e.name, e.reason);
+        }
     }
 }
