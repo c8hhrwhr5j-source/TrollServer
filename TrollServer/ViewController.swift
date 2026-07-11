@@ -39,6 +39,11 @@ class ViewController: UIViewController {
     private var injectRestoreButtons: [UIButton] = []
     private var injectIPAURLs: [URL?] = []
 
+    // 清理区域
+    private let cleanupCard = UIView()
+    private let tempSpaceLabel = UILabel()
+    private let cleanupBtn = UIButton(type: .system)
+
     // 定时刷新
     private var refreshTimer: Timer?
 
@@ -283,6 +288,10 @@ class ViewController: UIViewController {
             contentView.addSubview(card)
         }
 
+        // 清理卡片
+        buildCleanupCard()
+        contentView.addSubview(cleanupCard)
+
         NSLayoutConstraint.activate([
             // 滚动容器铺满整个视图
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -346,8 +355,13 @@ class ViewController: UIViewController {
             injectSectionTitle.topAnchor.constraint(equalTo: gestaltCard.bottomAnchor, constant: 28),
             injectSectionTitle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
 
-            // 关键: 内容底部锚定, 否则最后一块(注入按钮)会被挤出屏幕且无法滚动
-            (injectCards.last ?? gestaltCard).bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
+            // 清理卡片
+            cleanupCard.topAnchor.constraint(equalTo: (injectCards.last ?? gestaltCard).bottomAnchor, constant: 16),
+            cleanupCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            cleanupCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+            // 关键: 内容底部锚定, 否则最后一块会被挤出屏幕且无法滚动
+            cleanupCard.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
         ])
 
         // 动态注入卡片约束
@@ -365,9 +379,15 @@ class ViewController: UIViewController {
 
     // ===================== 定时刷新 =====================
 
+    private var timerTick: Int = 0
+
     private func startRefreshTimer() {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             self?.updateStatus()
+            self?.timerTick += 1
+            if self?.timerTick ?? 0 % 10 == 0 {  // 每 30 秒刷新一次临时空间
+                self?.updateTempSpaceUI()
+            }
         }
     }
 
@@ -686,6 +706,82 @@ class ViewController: UIViewController {
         }
     }
 
+    private func buildCleanupCard() {
+        cleanupCard.backgroundColor = .secondarySystemGroupedBackground
+        cleanupCard.layer.cornerRadius = 12
+        cleanupCard.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = UILabel()
+        titleLabel.text = "🗑 临时文件清理"
+        titleLabel.font = UIFont.boldSystemFont(ofSize: 15)
+        titleLabel.textColor = .label
+
+        tempSpaceLabel.text = "计算中..."
+        tempSpaceLabel.font = UIFont.systemFont(ofSize: 12)
+        tempSpaceLabel.textColor = .secondaryLabel
+        tempSpaceLabel.numberOfLines = 0
+
+        cleanupBtn.setTitle("🧹 清理临时文件", for: .normal)
+        cleanupBtn.setTitleColor(.white, for: .normal)
+        cleanupBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 13)
+        cleanupBtn.backgroundColor = .systemRed
+        cleanupBtn.layer.cornerRadius = 8
+        cleanupBtn.contentEdgeInsets = UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
+        cleanupBtn.addTarget(self, action: #selector(cleanupTapped), for: .touchUpInside)
+
+        let stack = UIStackView(arrangedSubviews: [titleLabel, tempSpaceLabel, cleanupBtn])
+        stack.axis = .vertical
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        cleanupCard.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: cleanupCard.topAnchor, constant: 14),
+            stack.leadingAnchor.constraint(equalTo: cleanupCard.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: cleanupCard.trailingAnchor, constant: -14),
+            stack.bottomAnchor.constraint(equalTo: cleanupCard.bottomAnchor, constant: -14),
+        ])
+
+        updateTempSpaceUI()
+    }
+
+    @objc private func cleanupTapped() {
+        let usage = DylibInjector.getTempSpaceUsage()
+        let msg = usage > 0
+            ? "当前占用: \(DylibInjector.formatBytes(usage))\n清理后释放这些空间。"
+            : "没有临时文件需要清理。"
+
+        let alert = UIAlertController(title: "清理临时文件", message: msg, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "确认清理", style: .destructive) { [weak self] _ in
+            DispatchQueue.global().async {
+                let result = DylibInjector.cleanupTempFiles()
+                DispatchQueue.main.async {
+                    self?.updateTempSpaceUI()
+                    self?.showAlert(title: "清理完成",
+                        message: "已删除 \(result.count) 个临时目录\n释放空间: \(DylibInjector.formatBytes(result.freedBytes))")
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    private func updateTempSpaceUI() {
+        let usage = DylibInjector.getTempSpaceUsage()
+        let dirs = DylibInjector.listTempDirs()
+        if usage > 0 {
+            tempSpaceLabel.text = "占用: \(DylibInjector.formatBytes(usage))（\(dirs.count) 个临时目录）"
+            tempSpaceLabel.textColor = .systemRed
+            cleanupBtn.isEnabled = true
+            cleanupBtn.alpha = 1.0
+        } else {
+            tempSpaceLabel.text = "无临时文件占用"
+            tempSpaceLabel.textColor = .secondaryLabel
+            cleanupBtn.isEnabled = false
+            cleanupBtn.alpha = 0.5
+        }
+    }
+
     private func scanAndUpdateInjectUI() {
         let apps = DylibInjector.scanInstalledApps()
         DispatchQueue.main.async { [weak self] in
@@ -739,6 +835,13 @@ class ViewController: UIViewController {
                 }
                 return
             }
+
+            // 自动清理旧的临时文件，避免占用过多空间
+            let cleanupResult = DylibInjector.cleanupTempFiles()
+            if cleanupResult.count > 0 {
+                print("[TrollServer] 🧹 生成前自动清理: \(cleanupResult.count) 个旧目录, 释放 \(DylibInjector.formatBytes(cleanupResult.freedBytes))")
+            }
+
             let result = DylibInjector.generateInjectedIPA(appPath: found.appPath)
             DispatchQueue.main.async {
                 switch result {
@@ -752,6 +855,7 @@ class ViewController: UIViewController {
                     // 切换按钮动作为安装
                     self.injectButtons[idx].removeTarget(self, action: #selector(self.injectTapped(_:)), for: .touchUpInside)
                     self.injectButtons[idx].addTarget(self, action: #selector(self.installTapped(_:)), for: .touchUpInside)
+                    self.updateTempSpaceUI()
                     self.showAlert(title: "\(target.icon) \(target.name) IPA 已生成",
                         message: "IPA 路径: \(ipaURL.path)\n\n点击 '🚀 TrollStore 安装' 自动跳转安装。\n\n⚠️ 安装前请先备份微信/QQ 数据！")
                 case .failure(let err):
@@ -759,6 +863,7 @@ class ViewController: UIViewController {
                     self.injectButtons[idx].setTitle("📦 重新生成", for: .normal)
                     self.injectStatusLabels[idx].text = "❌ 生成失败"
                     self.injectStatusLabels[idx].textColor = .systemRed
+                    self.updateTempSpaceUI()
                     self.showAlert(title: "生成失败: \(target.name)", message: err.localizedDescription, showLogButton: true)
                 }
             }

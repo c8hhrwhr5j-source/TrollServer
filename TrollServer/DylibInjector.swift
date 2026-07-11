@@ -337,6 +337,89 @@ enum DylibInjector {
         ])
     }
 
+    // MARK: - 临时文件清理
+
+    /// 扫描并返回所有临时注入目录
+    static func listTempDirs() -> [String] {
+        let tmpRoot = NSTemporaryDirectory()
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: tmpRoot) else { return [] }
+        return items
+            .filter { $0.hasPrefix("trollserver_inject_") }
+            .map { "\(tmpRoot)\($0)" }
+            .sorted(by: >) // 最新的在前
+    }
+
+    /// 获取临时文件占用空间（字节）
+    static func getTempSpaceUsage() -> Int64 {
+        var total: Int64 = 0
+        for dir in listTempDirs() {
+            total += dirSize(at: dir)
+        }
+        if FileManager.default.fileExists(atPath: logPath) {
+            total += (try? FileManager.default.attributesOfItem(atPath: logPath)[.size] as? Int64) ?? 0
+        }
+        return total
+    }
+
+    /// 清理所有临时注入目录和日志
+    /// - Returns: (删除的目录数, 释放的字节数)
+    @discardableResult
+    static func cleanupTempFiles() -> (count: Int, freedBytes: Int64) {
+        let fm = FileManager.default
+        var count = 0
+        var freed: Int64 = 0
+
+        for dir in listTempDirs() {
+            let sz = dirSize(at: dir)
+            do {
+                try fm.removeItem(atPath: dir)
+                count += 1
+                freed += sz
+                log("🗑️ 已删除: \(dir) (\(formatBytes(sz)))")
+            } catch {
+                log("⚠️ 删除失败: \(dir) — \(error)")
+            }
+        }
+
+        // 也清理日志（但保留空文件以便继续记录）
+        if fm.fileExists(atPath: logPath) {
+            let logSz = (try? fm.attributesOfItem(atPath: logPath)[.size] as? Int64) ?? 0
+            if logSz > 10 * 1024 * 1024 { // 日志 > 10MB 时截断
+                do {
+                    try "".data(using: .utf8)?.write(to: URL(fileURLWithPath: logPath))
+                    freed += logSz
+                    log("🗑️ 日志已截断 (\(formatBytes(logSz)))")
+                } catch {
+                    log("⚠️ 日志截断失败: \(error)")
+                }
+            }
+        }
+
+        log("✅ 清理完成: \(count) 个目录, 释放 \(formatBytes(freed))")
+        return (count, freed)
+    }
+
+    /// 递归计算目录大小
+    private static func dirSize(at path: String) -> Int64 {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path) else { return 0 }
+        var total: Int64 = 0
+        if let enumerator = fm.enumerator(atPath: path) {
+            for case let file as String in enumerator {
+                let full = "\(path)/\(file)"
+                total += (try? fm.attributesOfItem(atPath: full)[.size] as? Int64) ?? 0
+            }
+        }
+        return total
+    }
+
+    /// 格式化字节为可读字符串
+    static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
     // MARK: - TrollStore 安装
 
     /// 通过 TrollStore URL scheme 安装 IPA，若无法跳转则通过系统分享
