@@ -625,10 +625,9 @@ static NSString *spoof_ua_string(NSString *ua) {
 
 #pragma mark - 后台保活心跳（TrollServer daemon 存活检测）
 
-/// dylib 内部定时检测 TrollServer HTTP 是否可达
+/// dylib 内部定时检测 TrollServer HTTP 是否可达（GCD dispatch_source，不依赖 RunLoop）
 /// 若连续 3 次不可达，尝试触发 daemon 重启
-/// 注意：心跳通过 start_heartbeat_delayed() 延迟 2 秒启动，不在构造函数中直接创建
-static NSTimer *g_heartbeatTimer = nil;
+static dispatch_source_t g_heartbeatTimer = NULL;
 static int g_heartbeatMissCount = 0;
 
 #pragma mark - hook_objc_method 辅助宏
@@ -700,49 +699,46 @@ static void install_objc_hooks(void) {
 }
 
 static void start_heartbeat_delayed(void) {
+    // 5 秒后在全局低优先级队列启动（不依赖主 RunLoop）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
         if (g_heartbeatTimer) return;
-        @try {
-            g_heartbeatTimer = [NSTimer scheduledTimerWithTimeInterval:120.0
-                                                               repeats:YES
-                                                                 block:^(NSTimer *t) {
-                NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:51111/api/spoof"];
-                NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-                req.HTTPMethod = @"GET";
-                req.timeoutInterval = 3.0;
-                NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-                NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-                [[session dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-                    if (d && !e) {
-                        g_heartbeatMissCount = 0;
-                    } else {
-                        g_heartbeatMissCount++;
-                        if (g_heartbeatMissCount >= 3) {
-                            NSLog(@"[libiPadSpoof] ⚠️ TrollServer 连续 %d 次不可达，尝试重启 daemon",
-                                  g_heartbeatMissCount);
-                            pid_t pid;
-                            char *argv[] = {
-                                (char *)"/usr/bin/launchctl",
-                                (char *)"kickstart",
-                                (char *)"-k",
-                                (char *)"system/com.trollserver.daemon",
-                                NULL
-                            };
-                            if (posix_spawn(&pid, argv[0], NULL, NULL, argv, NULL) == 0) {
-                                waitpid(pid, NULL, 0);
-                            }
-                            g_heartbeatMissCount = 0;
+        g_heartbeatTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
+        dispatch_source_set_timer(g_heartbeatTimer,
+                                   dispatch_time(DISPATCH_TIME_NOW, (int64_t)(120.0 * NSEC_PER_SEC)),
+                                   (uint64_t)(120.0 * NSEC_PER_SEC), 10 * NSEC_PER_SEC);
+        dispatch_source_set_event_handler(g_heartbeatTimer, ^{
+            NSURL *url = [NSURL URLWithString:@"http://127.0.0.1:51111/api/spoof"];
+            NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+            req.HTTPMethod = @"GET";
+            req.timeoutInterval = 3.0;
+            NSURLSession *session = [NSURLSession sharedSession];
+            [[session dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+                if (d && !e) {
+                    g_heartbeatMissCount = 0;
+                } else {
+                    g_heartbeatMissCount++;
+                    if (g_heartbeatMissCount >= 3) {
+                        bootlog("[libiPadSpoof] heart: TrollServer 连续3次不可达");
+                        pid_t pid;
+                        char *argv[] = {
+                            (char *)"/usr/bin/launchctl",
+                            (char *)"kickstart",
+                            (char *)"-k",
+                            (char *)"system/com.trollserver.daemon",
+                            NULL
+                        };
+                        if (posix_spawn(&pid, argv[0], NULL, NULL, argv, NULL) == 0) {
+                            waitpid(pid, NULL, 0);
                         }
+                        g_heartbeatMissCount = 0;
                     }
-                }] resume];
-            }];
-            [[NSRunLoop mainRunLoop] addTimer:g_heartbeatTimer forMode:NSRunLoopCommonModes];
-            [g_heartbeatTimer fire];
-            NSLog(@"[libiPadSpoof] 💓 心跳检测已启动（间隔 120s）");
-        } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ 心跳启动失败: %@ %@", e.name, e.reason);
-        }
+                }
+            }] resume];
+        });
+        dispatch_resume(g_heartbeatTimer);
+        bootlog("[CSTR] 心跳: GCD timer 已启动 (间隔120s)");
     });
 }
 
@@ -814,18 +810,13 @@ static void spoof_load(void) {
             bootlog("[CSTR] step5-SKIP: CFPreferences hook 崩溃，已跳过");
         }
 
-        // ── 第四步：延迟安装 ObjC hooks ──
-        bootlog("[CSTR] step6: 调度 dispatch_after (1.0s 后安装 ObjC hooks)...");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            bootlog("[DELAY] step7: 延迟块开始执行");
-            install_objc_hooks();
-            bootlog("[DELAY] step8: ObjC hooks 已安装");
-            start_heartbeat_delayed();
-            bootlogf("[DELAY] step9: 全部完成 (enabled=%d)", g_enabled);
-        });
+        // ── 第四步：直接安装 ObjC hooks（constructor 阶段安全，无需延迟）──
+        bootlog("[CSTR] step6: 开始安装 ObjC hooks（同步）...");
+        install_objc_hooks();
+        bootlog("[CSTR] step7: ObjC hooks 已安装");
+        start_heartbeat_delayed();
+        bootlogf("[CSTR] step8: 全部完成 (enabled=%d)", g_enabled);
 
-        bootlog("[CSTR] step6: constructor 完成，等待延迟块执行...");
+        bootlog("[CSTR] constructor 完成");
     }
 }
