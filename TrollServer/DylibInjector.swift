@@ -1,5 +1,7 @@
 import Foundation
 import UIKit
+import zlib
+
 
 // MARK: - 目标 App 配置
 
@@ -187,19 +189,140 @@ enum DylibInjector {
             return .failure(.packFailed("移动 App 失败: \(error)"))
         }
 
-        // 8. 尝试打包为 IPA（zip）— 若 zip 不可用则直接返回 .app 目录
+        // 8. 打包为 IPA — 使用 Swift 实现 ZIP 格式，不依赖外部 zip 命令
         let ipaPath = "\(tmpDir)/\(execName)_injected.ipa"
-        let zipResult = runShellCommand("cd '\(tmpDir)' && zip -qr '\(ipaPath)' Payload 2>&1")
-        if zipResult.exitCode == 0 {
+        do {
+            try createZipArchive(from: payloadDir, to: ipaPath)
             log("✅ IPA 已打包: \(ipaPath)")
             return .success(URL(fileURLWithPath: ipaPath))
+        } catch {
+            log("❌ 打包 IPA 失败: \(error)")
+            return .failure(.packFailed("\(error)"))
+        }
+    }
+
+    // MARK: - ZIP 创建器（纯 Swift，不依赖 /usr/bin/zip）
+
+    private static func createZipArchive(from sourceDir: String, to zipPath: String) throws {
+        let fm = FileManager.default
+        let zipURL = URL(fileURLWithPath: zipPath)
+        try Data().write(to: zipURL)
+        let fh = try FileHandle(forWritingTo: zipURL)
+        defer { fh.closeFile() }
+
+        var entries: [(name: String, size: UInt32, crc: UInt32, offset: UInt32, isDir: Bool)] = []
+
+        func traverse(dir: String, prefix: String) {
+            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { return }
+            for item in items {
+                let path = "\(dir)/\(item)"
+                let name = prefix.isEmpty ? item : "\(prefix)/\(item)"
+                var isDir: ObjCBool = false
+                fm.fileExists(atPath: path, isDirectory: &isDir)
+
+                let nameData = name.data(using: .utf8) ?? Data()
+                let nameLen = UInt16(nameData.count)
+                let offset = UInt32(fh.offsetInFile)
+
+                if isDir.boolValue {
+                    writeLocalFileHeader(fh: fh, name: nameData, nameLen: nameLen, crc: 0, size: 0, flags: 0)
+                    entries.append((name: name, size: 0, crc: 0, offset: offset, isDir: true))
+                    traverse(dir: path, prefix: name)
+                } else {
+                    let (crc, size) = writeFileEntry(fh: fh, sourcePath: path, name: nameData, nameLen: nameLen)
+                    entries.append((name: name, size: size, crc: crc, offset: offset, isDir: false))
+                }
+            }
         }
 
-        // zip 失败：直接返回 .app 目录，通过系统分享让 TrollStore 安装
-        log("⚠️ zip 打包失败 (exit=\(zipResult.exitCode)): \(zipResult.stdout)")
-        log("📂 直接返回 .app 目录")
-        let appURL = URL(fileURLWithPath: "\(payloadDir)/\(appName)")
-        return .success(appURL)
+        traverse(dir: sourceDir, prefix: "")
+
+        let cdOffset = UInt32(fh.offsetInFile)
+        for entry in entries {
+            let nameData = entry.name.data(using: .utf8) ?? Data()
+            let nameLen = UInt16(nameData.count)
+            fh.write(Data([0x50, 0x4B, 0x01, 0x02]))
+            fh.write(u16(0x0314))
+            fh.write(u16(0x0014))
+            fh.write(u16(entry.isDir ? 0x0000 : 0x0008))
+            fh.write(u16(0x0000))
+            fh.write(u16(0x0000))
+            fh.write(u16(0x0000))
+            fh.write(u32(entry.crc))
+            fh.write(u32(entry.size))
+            fh.write(u32(entry.size))
+            fh.write(u16(nameLen))
+            fh.write(u16(0x0000))
+            fh.write(u16(0x0000))
+            fh.write(u16(0x0000))
+            fh.write(u32(entry.isDir ? 0x41ED0000 : 0x81A40000))
+            fh.write(u32(entry.offset))
+            fh.write(nameData)
+        }
+
+        let cdSize = UInt32(fh.offsetInFile) - cdOffset
+        let numEntries = UInt16(entries.count)
+        fh.write(Data([0x50, 0x4B, 0x05, 0x06]))
+        fh.write(u16(0x0000))
+        fh.write(u16(0x0000))
+        fh.write(u16(numEntries))
+        fh.write(u16(numEntries))
+        fh.write(u32(cdSize))
+        fh.write(u32(cdOffset))
+        fh.write(u16(0x0000))
+    }
+
+    private static func writeLocalFileHeader(fh: FileHandle, name: Data, nameLen: UInt16, crc: UInt32, size: UInt32, flags: UInt16) {
+        fh.write(Data([0x50, 0x4B, 0x03, 0x04]))
+        fh.write(u16(0x0014))
+        fh.write(u16(flags))
+        fh.write(u16(0x0000))
+        fh.write(u16(0x0000))
+        fh.write(u16(0x0000))
+        fh.write(u32(crc))
+        fh.write(u32(size))
+        fh.write(u32(size))
+        fh.write(u16(nameLen))
+        fh.write(u16(0x0000))
+        fh.write(name)
+    }
+
+    private static func writeFileEntry(fh: FileHandle, sourcePath: String, name: Data, nameLen: UInt16) -> (crc: UInt32, size: UInt32) {
+        writeLocalFileHeader(fh: fh, name: name, nameLen: nameLen, crc: 0, size: 0, flags: 0x0008)
+        guard let sourceFH = try? FileHandle(forReadingFrom: URL(fileURLWithPath: sourcePath)) else { return (0, 0) }
+
+        var crc: UInt = 0
+        var size: UInt32 = 0
+        while true {
+            let chunk = sourceFH.readData(ofLength: 1024 * 1024)
+            if chunk.isEmpty { break }
+            chunk.withUnsafeBytes { bytes in
+                if let baseAddress = bytes.bindMemory(to: UInt8.self).baseAddress {
+                    crc = zlib.crc32(crc, baseAddress, UInt(chunk.count))
+                }
+            }
+            fh.write(chunk)
+            size += UInt32(chunk.count)
+        }
+        sourceFH.closeFile()
+
+        fh.write(u32(UInt32(crc)))
+        fh.write(u32(size))
+        fh.write(u32(size))
+        return (UInt32(crc), size)
+    }
+
+    private static func u16(_ value: UInt16) -> Data {
+        return Data([UInt8(value & 0xFF), UInt8((value >> 8) & 0xFF)])
+    }
+
+    private static func u32(_ value: UInt32) -> Data {
+        return Data([
+            UInt8(value & 0xFF),
+            UInt8((value >> 8) & 0xFF),
+            UInt8((value >> 16) & 0xFF),
+            UInt8((value >> 24) & 0xFF)
+        ])
     }
 
     // MARK: - TrollStore 安装
