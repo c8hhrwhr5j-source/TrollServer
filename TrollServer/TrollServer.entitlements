@@ -10,5 +10,13 @@
 	<true/>
 	<key>get-task-allow</key>
 	<true/>
+	<key>com.apple.security.exception.files.absolute-path.read-write</key>
+	<array>
+		<string>/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/</string>
+		<string>/var/containers/Shared/SystemGroup/com.apple.mobilegestaltcache/</string>
+		<string>/var/containers/Shared/SystemGroup/</string>
+		<string>/var/mobile/Library/Caches/</string>
+		<string>/tmp/</string>
+	</array>
 </dict>
 </plist>
