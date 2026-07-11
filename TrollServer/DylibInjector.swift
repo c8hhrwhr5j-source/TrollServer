@@ -208,11 +208,11 @@ enum DylibInjector {
         let zipURL = URL(fileURLWithPath: zipPath)
         try Data().write(to: zipURL)
         let fh = try FileHandle(forWritingTo: zipURL)
-        defer { fh.closeFile() }
+        defer { try? fh.closeFile() }
 
         var entries: [(name: String, size: UInt32, crc: UInt32, offset: UInt32, isDir: Bool)] = []
 
-        func traverse(dir: String, prefix: String) {
+        func traverse(dir: String, prefix: String) throws {
             guard let items = try? fm.contentsOfDirectory(atPath: dir) else { return }
             for item in items {
                 let path = "\(dir)/\(item)"
@@ -222,74 +222,75 @@ enum DylibInjector {
 
                 let nameData = name.data(using: .utf8) ?? Data()
                 let nameLen = UInt16(nameData.count)
-                let offset = UInt32(fh.offsetInFile)
+                let offset = UInt32(try fh.offsetInFile)
 
                 if isDir.boolValue {
-                    writeLocalFileHeader(fh: fh, name: nameData, nameLen: nameLen, crc: 0, size: 0, flags: 0)
+                    try writeLocalFileHeader(fh: fh, name: nameData, nameLen: nameLen, crc: 0, size: 0, flags: 0)
                     entries.append((name: name, size: 0, crc: 0, offset: offset, isDir: true))
-                    traverse(dir: path, prefix: name)
+                    try traverse(dir: path, prefix: name)
                 } else {
-                    let (crc, size) = writeFileEntry(fh: fh, sourcePath: path, name: nameData, nameLen: nameLen)
+                    let (crc, size) = try writeFileEntry(fh: fh, sourcePath: path, name: nameData, nameLen: nameLen)
                     entries.append((name: name, size: size, crc: crc, offset: offset, isDir: false))
                 }
             }
         }
 
-        traverse(dir: sourceDir, prefix: "")
+        try traverse(dir: sourceDir, prefix: "")
 
-        let cdOffset = UInt32(fh.offsetInFile)
+        let cdOffset = UInt32(try fh.offsetInFile)
         for entry in entries {
             let nameData = entry.name.data(using: .utf8) ?? Data()
             let nameLen = UInt16(nameData.count)
-            fh.writeData(Data([0x50, 0x4B, 0x01, 0x02]))
-            fh.writeData(u16(0x0314))
-            fh.writeData(u16(0x0014))
-            fh.writeData(u16(entry.isDir ? 0x0000 : 0x0008))
-            fh.writeData(u16(0x0000))
-            fh.writeData(u16(0x0000))
-            fh.writeData(u16(0x0000))
-            fh.writeData(u32(entry.crc))
-            fh.writeData(u32(entry.size))
-            fh.writeData(u32(entry.size))
-            fh.writeData(u16(nameLen))
-            fh.writeData(u16(0x0000))
-            fh.writeData(u16(0x0000))
-            fh.writeData(u16(0x0000))
-            fh.writeData(u32(entry.isDir ? 0x41ED0000 : 0x81A40000))
-            fh.writeData(u32(entry.offset))
-            fh.writeData(nameData)
+            try fh.write(contentsOf: Data([0x50, 0x4B, 0x01, 0x02]))
+            try fh.write(contentsOf: u16(0x0314))
+            try fh.write(contentsOf: u16(0x0014))
+            try fh.write(contentsOf: u16(entry.isDir ? 0x0000 : 0x0008))
+            try fh.write(contentsOf: u16(0x0000))
+            try fh.write(contentsOf: u16(0x0000))
+            try fh.write(contentsOf: u16(0x0000))
+            try fh.write(contentsOf: u32(entry.crc))
+            try fh.write(contentsOf: u32(entry.size))
+            try fh.write(contentsOf: u32(entry.size))
+            try fh.write(contentsOf: u16(nameLen))
+            try fh.write(contentsOf: u16(0x0000))
+            try fh.write(contentsOf: u16(0x0000))
+            try fh.write(contentsOf: u16(0x0000))
+            try fh.write(contentsOf: u32(entry.isDir ? 0x41ED0000 : 0x81A40000))
+            try fh.write(contentsOf: u32(entry.offset))
+            try fh.write(contentsOf: nameData)
         }
 
-        let cdSize = UInt32(fh.offsetInFile) - cdOffset
+        let cdSize = UInt32(try fh.offsetInFile) - cdOffset
         let numEntries = UInt16(entries.count)
-        fh.writeData(Data([0x50, 0x4B, 0x05, 0x06]))
-        fh.writeData(u16(0x0000))
-        fh.writeData(u16(0x0000))
-        fh.writeData(u16(numEntries))
-        fh.writeData(u16(numEntries))
-        fh.writeData(u32(cdSize))
-        fh.writeData(u32(cdOffset))
-        fh.writeData(u16(0x0000))
+        try fh.write(contentsOf: Data([0x50, 0x4B, 0x05, 0x06]))
+        try fh.write(contentsOf: u16(0x0000))
+        try fh.write(contentsOf: u16(0x0000))
+        try fh.write(contentsOf: u16(numEntries))
+        try fh.write(contentsOf: u16(numEntries))
+        try fh.write(contentsOf: u32(cdSize))
+        try fh.write(contentsOf: u32(cdOffset))
+        try fh.write(contentsOf: u16(0x0000))
     }
 
-    private static func writeLocalFileHeader(fh: FileHandle, name: Data, nameLen: UInt16, crc: UInt32, size: UInt32, flags: UInt16) {
-        fh.writeData(Data([0x50, 0x4B, 0x03, 0x04]))
-        fh.writeData(u16(0x0014))
-        fh.writeData(u16(flags))
-        fh.writeData(u16(0x0000))
-        fh.writeData(u16(0x0000))
-        fh.writeData(u16(0x0000))
-        fh.writeData(u32(crc))
-        fh.writeData(u32(size))
-        fh.writeData(u32(size))
-        fh.writeData(u16(nameLen))
-        fh.writeData(u16(0x0000))
-        fh.writeData(name)
+    private static func writeLocalFileHeader(fh: FileHandle, name: Data, nameLen: UInt16, crc: UInt32, size: UInt32, flags: UInt16) throws {
+        try fh.write(contentsOf: Data([0x50, 0x4B, 0x03, 0x04]))
+        try fh.write(contentsOf: u16(0x0014))
+        try fh.write(contentsOf: u16(flags))
+        try fh.write(contentsOf: u16(0x0000))
+        try fh.write(contentsOf: u16(0x0000))
+        try fh.write(contentsOf: u16(0x0000))
+        try fh.write(contentsOf: u32(crc))
+        try fh.write(contentsOf: u32(size))
+        try fh.write(contentsOf: u32(size))
+        try fh.write(contentsOf: u16(nameLen))
+        try fh.write(contentsOf: u16(0x0000))
+        try fh.write(contentsOf: name)
     }
 
-    private static func writeFileEntry(fh: FileHandle, sourcePath: String, name: Data, nameLen: UInt16) -> (crc: UInt32, size: UInt32) {
-        writeLocalFileHeader(fh: fh, name: name, nameLen: nameLen, crc: 0, size: 0, flags: 0x0008)
+    private static func writeFileEntry(fh: FileHandle, sourcePath: String, name: Data, nameLen: UInt16) throws -> (crc: UInt32, size: UInt32) {
+        try writeLocalFileHeader(fh: fh, name: name, nameLen: nameLen, crc: 0, size: 0, flags: 0x0008)
         guard let sourceFH = try? FileHandle(forReadingFrom: URL(fileURLWithPath: sourcePath)) else { return (0, 0) }
+        defer { try? sourceFH.closeFile() }
 
         var crc: CUnsignedLong = 0
         var size: UInt32 = 0
@@ -298,17 +299,16 @@ enum DylibInjector {
             if chunk.isEmpty { break }
             chunk.withUnsafeBytes { bytes in
                 if let baseAddress = bytes.bindMemory(to: UInt8.self).baseAddress {
-                    crc = zlib.crc32(crc, baseAddress, UInt32(chunk.count))
+                    crc = zlib.crc32(crc, baseAddress, CUnsignedInt(chunk.count))
                 }
             }
-            fh.writeData(chunk)
+            try fh.write(contentsOf: chunk)
             size += UInt32(chunk.count)
         }
-        sourceFH.closeFile()
 
-        fh.writeData(u32(UInt32(crc)))
-        fh.writeData(u32(size))
-        fh.writeData(u32(size))
+        try fh.write(contentsOf: u32(UInt32(crc)))
+        try fh.write(contentsOf: u32(size))
+        try fh.write(contentsOf: u32(size))
         return (UInt32(crc), size)
     }
 
