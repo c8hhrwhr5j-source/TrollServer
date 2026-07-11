@@ -7,8 +7,8 @@
 #  产物:
 #    ladder_01_fishhook.dylib   — 仅 fishhook.c (无任何 hook 安装)
 #    ladder_02_fishRun.dylib    — fishhook + C hook 安装代码
-#    ladder_03_all.dylib        — 完整版 (arm64 only，排除 arm64e 干扰)
-#    ladder_03e_all.dylib       — 完整版 (arm64 + arm64e)
+#    ladder_03_noUI.dylib        — 完整版 (arm64 only，排除 arm64e 干扰)
+#    ladder_03e_noUI.dylib       — 完整版 (arm64 + arm64e)
 # ============================================================
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -25,7 +25,8 @@ filesize() {
 # ── Ladder 01: 纯 fishhook.c, 无 libiPadSpoof.m, 无任何框架 ──
 echo "=== Ladder 01: fishhook only (无 hook, 无 Foundation) ==="
 cat > _ladder_min.m << 'CEOF'
-#import <stdarg.h>
+#import <stdio.h>
+#import <string.h>
 #import <fcntl.h>
 #import <unistd.h>
 #import <signal.h>
@@ -56,7 +57,9 @@ echo ""
 # ── Ladder 02: fishhook + C hooks 安装 (sysctlbyname/uname/getifaddrs) ──
 echo "=== Ladder 02: fishhook with C hook install ==="
 cat > _ladder_run.m << 'CEOF'
-#import <stdarg.h>
+#import <Foundation/Foundation.h>
+#import <stdio.h>
+#import <string.h>
 #import <fcntl.h>
 #import <unistd.h>
 #import <signal.h>
@@ -65,8 +68,6 @@ cat > _ladder_run.m << 'CEOF'
 #import <sys/socket.h>
 #import <ifaddrs.h>
 #import <net/if.h>
-#import <string.h>
-#import <strings.h>
 #import <dlfcn.h>
 #import "fishhook.h"
 
@@ -127,7 +128,7 @@ static void ld02_init(void) {
     bootlog("[LD02] fishhook C hooks installed OK");
 }
 CEOF
-if clang -arch arm64 $FLAGS -fobjc-arc fishhook.c _ladder_run.m -o ladder_02_fishRun.dylib; then
+if clang -arch arm64 $FLAGS -fobjc-arc -framework Foundation fishhook.c _ladder_run.m -o ladder_02_fishRun.dylib; then
     ldid -S ladder_02_fishRun.dylib 2>/dev/null || true
     echo "   ✅ ladder_02_fishRun.dylib ($(filesize ladder_02_fishRun.dylib) bytes)"
 else
