@@ -37,7 +37,7 @@ jobs:
             fi
           fi
           true
-      - name: Build libiPadSpoof.dylib
+      - name: Build libiPadSpoof.dylib + test dylibs
         run: |
           echo "Current directory: $(pwd)"
           ls -la
@@ -47,9 +47,15 @@ jobs:
             echo "ERROR: spoof directory not found"
             exit 1
           fi
-          chmod +x build_spoof.sh
+          chmod +x build_spoof.sh build_testboot.sh build_purec.sh
+          echo "=== 编译 libiPadSpoof ==="
           ./build_spoof.sh
-          ls -la libiPadSpoof.dylib
+          echo "=== 编译测试探针 ==="
+          ./build_testboot.sh
+          echo "=== 编译纯C探针 ==="
+          ./build_purec.sh
+          echo "=== 所有产物 ==="
+          ls -la *.dylib
 
       - name: Build Release IPA
         run: |
@@ -79,7 +85,7 @@ jobs:
           name: TrollServer-artifacts
           path: |
             TrollServer.ipa
-            spoof/libiPadSpoof.dylib
+            spoof/*.dylib
 
       - name: Create Release
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
@@ -90,9 +96,12 @@ jobs:
           body: |
             Auto build artifacts:
             - TrollServer.ipa (TrollStore install package)
-            - libiPadSpoof.dylib (device spoof plugin for TrollFools injection)
+            - libiPadSpoof.dylib (主伪装 dylib)
+            - libTestBoot.dylib (Foundation 探针)
+            - libPureC_arm64.dylib (纯C arm64 探针)
+            - libPureC_arm64e.dylib (纯C arm64e 探针)
           files: |
             TrollServer.ipa
-            spoof/libiPadSpoof.dylib
+            spoof/*.dylib
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
