@@ -28,6 +28,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <sys/sysctl.h>
+#import <sys/utsname.h>
 #import <sys/errno.h>
 #import <string.h>
 #import <strings.h>
