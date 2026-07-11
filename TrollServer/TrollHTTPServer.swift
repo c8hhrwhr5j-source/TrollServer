@@ -441,6 +441,9 @@ class TrollHTTPServer {
         if p == "/api/heartbeat" {
             return .ok("ok".data(using: .utf8)!)
         }
+        if p == "/api/health" {
+            return healthInfo()
+        }
         if p == "/api/device" {
             return deviceInfo()
         }
@@ -530,6 +533,27 @@ class TrollHTTPServer {
             "wifiIP": UDPBroadcaster.getWiFiIPAddress() ?? "0.0.0.0"
         ]
         guard let json = try? JSONSerialization.data(withJSONObject: info, options: .prettyPrinted) else {
+            return .internalError()
+        }
+        return .ok(json, contentType: "application/json")
+    }
+
+    /// 轻量健康检查（供 dylib 心跳使用，返回 JSON）
+    private func healthInfo() -> HTTPResponse {
+        let info: [String: Any] = [
+            "status": "ok",
+            "uptime": Int(-startTime.timeIntervalSinceNow),
+            "connections": requestCount,
+            "keepalive": [
+                "silentAudio": SilentAudioPlayer.shared.isPlaying,
+                "monitor": ServiceMonitor.shared.statusDetail,
+            ],
+            "spoof": [
+                "enabled": SpoofConfig.isEnabled,
+                "productType": SpoofConfig.productType,
+            ],
+        ]
+        guard let json = try? JSONSerialization.data(withJSONObject: info) else {
             return .internalError()
         }
         return .ok(json, contentType: "application/json")
