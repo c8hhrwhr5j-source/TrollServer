@@ -111,35 +111,38 @@ enum DylibInjector {
             return .failure(.binaryNotReadable)
         }
 
-        // 1. 备份二进制（第一次注入时）
+        // 1. 备份二进制（第一次注入时）— 使用 cp 命令绕过沙盒
         let backupPath = "\(binaryPath).trollserver_backup"
         if !fm.fileExists(atPath: backupPath) {
-            do { try fm.copyItem(atPath: binaryPath, toPath: backupPath) }
-            catch {
-                log("⚠️ 备份失败: \(error)")
+            let r = runShellCommand("cp '\(binaryPath)' '\(backupPath)' 2>&1")
+            if r.exitCode != 0 {
+                log("⚠️ 备份失败 (cp exit=\(r.exitCode)): \(r.stdout)")
                 // 不阻塞，继续尝试注入
+            } else {
+                log("✅ 已备份: \(backupPath)")
             }
         }
 
-        // 2. 创建 Frameworks 目录
+        // 2. 创建 Frameworks 目录 — 使用 mkdir 命令
         if !fm.fileExists(atPath: frameworksPath) {
-            do { try fm.createDirectory(atPath: frameworksPath, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755]) }
-            catch {
-                log("❌ 创建 Frameworks 目录失败: \(error)")
-                return .failure(.cantCreateFrameworks("\(error)"))
+            let r = runShellCommand("mkdir -p '\(frameworksPath)' 2>&1")
+            if r.exitCode != 0 {
+                log("❌ 创建 Frameworks 目录失败 (mkdir exit=\(r.exitCode)): \(r.stdout)")
+                return .failure(.cantCreateFrameworks("mkdir exit=\(r.exitCode): \(r.stdout)"))
             }
+            _ = runShellCommand("chmod 755 '\(frameworksPath)' 2>&1")
         }
 
-        // 3. 复制 dylib
+        // 3. 复制 dylib — 使用 cp 命令
         if fm.fileExists(atPath: dylibDestPath) {
-            try? fm.removeItem(atPath: dylibDestPath)
+            _ = runShellCommand("rm -f '\(dylibDestPath)' 2>&1")
         }
-        do { try fm.copyItem(atPath: dylibSrc, toPath: dylibDestPath) }
-        catch {
-            log("❌ 复制 dylib 失败: \(error)")
-            return .failure(.cantCopyDylib("\(error)"))
+        let cpResult = runShellCommand("cp '\(dylibSrc)' '\(dylibDestPath)' 2>&1")
+        if cpResult.exitCode != 0 {
+            log("❌ 复制 dylib 失败 (cp exit=\(cpResult.exitCode)): \(cpResult.stdout)")
+            return .failure(.cantCopyDylib("cp exit=\(cpResult.exitCode): \(cpResult.stdout)"))
         }
-        chmod(dylibDestPath, 0o755)
+        _ = runShellCommand("chmod 755 '\(dylibDestPath)' 2>&1")
         log("✅ dylib 已复制到 \(dylibDestPath)")
 
         // 4. 修补 Mach-O 二进制
@@ -183,17 +186,19 @@ enum DylibInjector {
             return .failure(.noBackup)
         }
 
-        // 恢复二进制
-        do {
-            try? fm.removeItem(atPath: binaryPath)
-            try fm.copyItem(atPath: backupPath, toPath: binaryPath)
-            chmod(binaryPath, 0o755)
-        } catch {
-            return .failure(.restoreFailed("\(error)"))
+        // 恢复二进制 — 使用 cp 命令绕过沙盒
+        let rmResult = runShellCommand("rm -f '\(binaryPath)' 2>&1")
+        if rmResult.exitCode != 0 {
+            log("⚠️ 删除旧二进制警告 (rm exit=\(rmResult.exitCode)): \(rmResult.stdout)")
         }
+        let cpResult = runShellCommand("cp '\(backupPath)' '\(binaryPath)' 2>&1")
+        if cpResult.exitCode != 0 {
+            return .failure(.restoreFailed("cp exit=\(cpResult.exitCode): \(cpResult.stdout)"))
+        }
+        _ = runShellCommand("chmod 755 '\(binaryPath)' 2>&1")
 
         // 删除 dylib
-        try? fm.removeItem(atPath: dylibDestPath)
+        _ = runShellCommand("rm -f '\(dylibDestPath)' 2>&1")
 
         // 重签
         _ = runShellCommand("/usr/bin/ldid -S \(binaryPath)")
@@ -205,6 +210,7 @@ enum DylibInjector {
     // MARK: - Mach-O 修补
 
     /// 在 Fat/单架构 Mach-O 中注入 LC_LOAD_DYLIB，并去除 LC_CODE_SIGNATURE
+    /// 使用临时文件 + cp 命令绕过沙盒写入限制
     static func patchMachO(at path: String, dylibLoadPath: String) throws {
         let url = URL(fileURLWithPath: path)
         var data = try Data(contentsOf: url)
@@ -222,7 +228,18 @@ enum DylibInjector {
             throw InjectError.invalidBinary
         }
 
-        try data.write(to: url)
+        // 先写入沙盒临时文件，再用 cp 命令覆盖目标（绕过沙盒）
+        let tmpPath = "/tmp/trollserver_patch_\(UUID().uuidString).tmp"
+        let tmpURL = URL(fileURLWithPath: tmpPath)
+        try data.write(to: tmpURL)
+        defer { _ = runShellCommand("rm -f '\(tmpPath)' 2>&1") }
+
+        let cpResult = runShellCommand("cp '\(tmpPath)' '\(path)' 2>&1")
+        if cpResult.exitCode != 0 {
+            log("❌ 覆盖二进制失败 (cp exit=\(cpResult.exitCode)): \(cpResult.stdout)")
+            throw InjectError.patchFailed("cp exit=\(cpResult.exitCode): \(cpResult.stdout)")
+        }
+        _ = runShellCommand("chmod 755 '\(path)' 2>&1")
     }
 
     // MARK: - 私有
