@@ -38,6 +38,7 @@
  */
 
 #import <signal.h>
+#import <setjmp.h>
 #import <fcntl.h>
 #import <spawn.h>
 #import <sys/wait.h>
@@ -105,6 +106,9 @@ static void bootlogf(const char *fmt, ...) {
 
 #pragma mark - 崩溃信号处理器（调试用）
 
+static sigjmp_buf g_safe_jmp;
+static volatile int   g_crash_count = 0;
+
 static void spoof_crash_handler(int sig, siginfo_t *info, void *ctx) {
     const char *names[] = {"?", "SIGHUP","SIGINT","SIGQUIT","SIGILL",
         "SIGTRAP","SIGABRT","SIGEMT","SIGFPE","SIGKILL",
@@ -115,7 +119,13 @@ static void spoof_crash_handler(int sig, siginfo_t *info, void *ctx) {
     snprintf(buf, sizeof(buf), "[libiPadSpoof] CRASH signal=%s(%d) addr=%p",
              name, sig, info ? info->si_addr : NULL);
     bootlog(buf);
-    // 重置为默认行为，让系统正常生成 crash report
+
+    g_crash_count++;
+    // 用 siglongjmp 跳回安全恢复点，避免进程终止
+    if (g_crash_count <= 5) {
+        siglongjmp(g_safe_jmp, sig);
+    }
+    // 超过5次还在崩 → 让系统终止进程
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -767,8 +777,8 @@ static void spoof_load(void) {
             bootlog(buf);
         }
 
-        // ── 第三步：fishhook C 函数（纯符号替换，最安全）──
-        @try {
+        // ── 第三步：fishhook C 函数（崩溃恢复，失败则跳过）──
+        if (sigsetjmp(g_safe_jmp, 1) == 0) {
             struct rebinding reb[] = {
                 {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
                 {"uname",        (void *)my_uname,        (void **)&orig_uname},
@@ -777,15 +787,12 @@ static void spoof_load(void) {
             };
             rebind_symbols(reb, sizeof(reb) / sizeof(reb[0]));
             bootlog("[CSTR] step4: fishhook C 函数已安装");
-        } @catch (NSException *e) {
-            char buf[256];
-            snprintf(buf, sizeof(buf), "[CSTR] step4-ERR: fishhook 失败 %s",
-                     [e.reason UTF8String]);
-            bootlog(buf);
+        } else {
+            bootlog("[CSTR] step4-SKIP: fishhook C 函数崩溃，已跳过");
         }
 
-        // CFPreferences hook
-        @try {
+        // CFPreferences hook（独立崩溃恢复）
+        if (sigsetjmp(g_safe_jmp, 1) == 0) {
             bootlog("[CSTR] step5: 开始 CFPreferences hook...");
             void *cfHandle = dlopen(
                 "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
@@ -803,11 +810,8 @@ static void spoof_load(void) {
                 dlclose(cfHandle);
             }
             bootlog("[CSTR] step5: CFPreferences hook 完成");
-        } @catch (NSException *e) {
-            char buf[256];
-            snprintf(buf, sizeof(buf), "[CSTR] step5-ERR: CFPreferences 失败 %s",
-                     [e.reason UTF8String]);
-            bootlog(buf);
+        } else {
+            bootlog("[CSTR] step5-SKIP: CFPreferences hook 崩溃，已跳过");
         }
 
         // ── 第四步：延迟安装 ObjC hooks ──
