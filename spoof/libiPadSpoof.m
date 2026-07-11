@@ -41,6 +41,7 @@
 #import <fcntl.h>
 #import <spawn.h>
 #import <sys/wait.h>
+#import <stdarg.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -55,24 +56,65 @@
 #import <strings.h>
 #import "fishhook.h"
 
+#pragma mark - 诊断日志（原始 POSIX write，不依赖任何 ObjC/UIKit）
+
+// 查看方法：Filza 打开 /tmp/libiPadSpoof_boot.log
+// 或用 SSH: cat /tmp/libiPadSpoof_boot.log
+// 备用路径: /var/mobile/Documents/libiPadSpoof_boot.log
+static void bootlog(const char *msg) {
+    // 尝试主路径 /tmp
+    int fd = open("/tmp/libiPadSpoof_boot.log",
+                  O_WRONLY|O_CREAT|O_APPEND, 0644);
+    // 若 /tmp 不可写，尝试 /var/mobile/Documents
+    if (fd < 0) {
+        fd = open("/var/mobile/Documents/libiPadSpoof_boot.log",
+                  O_WRONLY|O_CREAT|O_APPEND, 0644);
+    }
+    if (fd >= 0) {
+        write(fd, msg, strlen(msg));
+        write(fd, "\n", 1);
+        close(fd);
+    }
+    // 同时写 stderr，用设备日志也可看到（Xcode → Device Logs 或 idevicesyslog）
+    write(STDERR_FILENO, msg, strlen(msg));
+    write(STDERR_FILENO, "\n", 1);
+}
+
+__attribute__((format(printf, 1, 2)))
+static void bootlogf(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    bootlog(buf);
+}
+
 #pragma mark - 崩溃信号处理器（调试用）
 
 static void spoof_crash_handler(int sig, siginfo_t *info, void *ctx) {
-    // 写入 /tmp 便于事后排查
     const char *names[] = {"?", "SIGHUP","SIGINT","SIGQUIT","SIGILL",
         "SIGTRAP","SIGABRT","SIGEMT","SIGFPE","SIGKILL",
         "SIGBUS","SIGSEGV","SIGSYS","SIGPIPE","SIGALRM",
         "SIGTERM"};
     const char *name = (sig >= 1 && sig <= 15) ? names[sig] : "UNKNOWN";
     char buf[256];
-    snprintf(buf, sizeof(buf), "[libiPadSpoof] ☠️ 崩溃信号 %s (sig=%d, addr=%p)\n",
+    snprintf(buf, sizeof(buf), "[libiPadSpoof] CRASH signal=%s(%d) addr=%p",
              name, sig, info ? info->si_addr : NULL);
-    int fd = open("/tmp/libiPadSpoof_crash.log", O_WRONLY|O_CREAT|O_APPEND, 0644);
-    if (fd >= 0) { write(fd, buf, strlen(buf)); close(fd); }
+    bootlog(buf);
     // 重置为默认行为，让系统正常生成 crash report
     signal(sig, SIG_DFL);
     raise(sig);
 }
+
+// 用 +load 在 constructor 之前写启动探针（验证 dylib 是否真的被 dyld 加载）
+// 如果这个文件都没有，说明 dyld 在加载 dylib 时就失败了
+@interface SpoofBootProbe : NSObject @end
+@implementation SpoofBootProbe
++ (void)load {
+    bootlog("[BOOT] +load 已执行 — dylib 被 dyld 成功加载");
+}
+@end
 
 #pragma mark - 全局状态
 
@@ -588,9 +630,9 @@ static void install_objc_hooks(void) {
         hook_objc_method(devCls, @selector(systemVersion),            @selector(spoof_systemVersion));
         hook_objc_method(devCls, @selector(name),                     @selector(spoof_name));
         hook_objc_method(devCls, @selector(identifierForVendor),      @selector(spoof_identifierForVendor));
-        NSLog(@"[libiPadSpoof] ✅ UIDevice hooks 已安装");
+        bootlog("[DELAY] UIDevice hooks 已安装");
     } @catch (NSException *e) {
-        NSLog(@"[libiPadSpoof] ⚠️ UIDevice hooks 失败: %@", e.reason);
+        bootlogf("[DELAY] UIDevice hooks 失败: %s", [e.reason UTF8String]);
     }
 
     @try {
@@ -600,34 +642,34 @@ static void install_objc_hooks(void) {
         hook_objc_method([NSProcessInfo class],
                          @selector(operatingSystemVersion),
                          @selector(spoof_operatingSystemVersion));
-        NSLog(@"[libiPadSpoof] ✅ NSProcessInfo hooks 已安装");
+        bootlog("[DELAY] NSProcessInfo hooks 已安装");
     } @catch (NSException *e) {
-        NSLog(@"[libiPadSpoof] ⚠️ NSProcessInfo hooks 失败: %@", e.reason);
+        bootlogf("[DELAY] NSProcessInfo hooks 失败: %s", [e.reason UTF8String]);
     }
 
     @try {
         hook_objc_method([NSMutableURLRequest class],
                          @selector(setValue:forHTTPHeaderField:),
                          @selector(spoof_setValue:forHTTPHeaderField:));
-        NSLog(@"[libiPadSpoof] ✅ NSMutableURLRequest UA hooks 已安装");
+        bootlog("[DELAY] NSMutableURLRequest UA hooks 已安装");
     } @catch (NSException *e) {
-        NSLog(@"[libiPadSpoof] ⚠️ NSMutableURLRequest hooks 失败: %@", e.reason);
+        bootlogf("[DELAY] NSMutableURLRequest hooks 失败: %s", [e.reason UTF8String]);
     }
 
     @try {
         Class wkCls = NSClassFromString(@"WKWebView");
         if (wkCls) {
             hook_objc_method(wkCls, @selector(customUserAgent), @selector(spoof_customUserAgent));
-            NSLog(@"[libiPadSpoof] ✅ WKWebView hooks 已安装");
+            bootlog("[DELAY] WKWebView hooks 已安装");
         }
     } @catch (NSException *e) {
-        NSLog(@"[libiPadSpoof] ⚠️ WKWebView hooks 失败: %@", e.reason);
+        bootlogf("[DELAY] WKWebView hooks 失败: %s", [e.reason UTF8String]);
     }
 
     @try {
         hook_telephony_if_available();
     } @catch (NSException *e) {
-        NSLog(@"[libiPadSpoof] ⚠️ CTTelephony hooks 失败: %@", e.reason);
+        bootlogf("[DELAY] CTTelephony hooks 失败: %s", [e.reason UTF8String]);
     }
 }
 
@@ -680,26 +722,36 @@ static void start_heartbeat_delayed(void) {
 
 __attribute__((constructor))
 static void spoof_load(void) {
+    bootlog("[CSTR] step0: constructor 入口");
+
     // ── 第一步：信号处理器（必须在任何操作之前）──
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = spoof_crash_handler;
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGBUS,  &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGTRAP, &sa, NULL);
+    sigaction(SIGILL,  &sa, NULL);
+    bootlog("[CSTR] step1: 信号处理器已安装 (SEGV,BUS,ABRT,TRAP,ILL)");
 
     @autoreleasepool {
-        NSLog(@"[libiPadSpoof] 📦 constructor 开始...");
+        bootlog("[CSTR] step2: @autoreleasepool 已进入");
 
         // ── 第二步：读配置（仅文件读取，绝无崩溃风险）──
-        @try { refresh_config_if_needed(); }
+        @try {
+            refresh_config_if_needed();
+            bootlog("[CSTR] step3: 配置已读取");
+        }
         @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ 读配置异常: %@", e.reason);
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[CSTR] step3-ERR: 读配置异常 %s",
+                     [e.reason UTF8String]);
+            bootlog(buf);
         }
 
         // ── 第三步：fishhook C 函数（纯符号替换，最安全）──
-        // 注意：不包括 _dyld_get_image_name（微信可能不使用这个符号，rebind 可能失败）
         @try {
             struct rebinding reb[] = {
                 {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
@@ -708,42 +760,52 @@ static void spoof_load(void) {
                 {"getifaddrs",   (void *)my_getifaddrs,   (void **)&orig_getifaddrs},
             };
             rebind_symbols(reb, sizeof(reb) / sizeof(reb[0]));
-            NSLog(@"[libiPadSpoof] ✅ fishhook C 函数已安装");
+            bootlog("[CSTR] step4: fishhook C 函数已安装");
         } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ fishhook 失败: %@", e.reason);
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[CSTR] step4-ERR: fishhook 失败 %s",
+                     [e.reason UTF8String]);
+            bootlog(buf);
         }
 
-        // CFPreferences hook（同样用 fishhook，安全）
+        // CFPreferences hook
         @try {
-            void *cfHandle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+            bootlog("[CSTR] step5: 开始 CFPreferences hook...");
+            void *cfHandle = dlopen(
+                "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+                RTLD_LAZY);
             if (cfHandle) {
                 orig_CFPrefsCopyAppValue = dlsym(cfHandle, "CFPreferencesCopyAppValue");
                 if (orig_CFPrefsCopyAppValue) {
                     struct rebinding cfReb[] = {
-                        {"CFPreferencesCopyAppValue", (void *)my_CFPrefsCopyAppValue,
+                        {"CFPreferencesCopyAppValue",
+                         (void *)my_CFPrefsCopyAppValue,
                          (void **)&orig_CFPrefsCopyAppValue},
                     };
                     rebind_symbols(cfReb, 1);
-                    NSLog(@"[libiPadSpoof] ✅ CFPreferences hook 已安装");
                 }
                 dlclose(cfHandle);
             }
+            bootlog("[CSTR] step5: CFPreferences hook 完成");
         } @catch (NSException *e) {
-            NSLog(@"[libiPadSpoof] ⚠️ CFPreferences hook 失败: %@", e.reason);
+            char buf[256];
+            snprintf(buf, sizeof(buf), "[CSTR] step5-ERR: CFPreferences 失败 %s",
+                     [e.reason UTF8String]);
+            bootlog(buf);
         }
 
-        // ── 第四步：延迟安装 ObjC hooks（等 App 完全启动后再执行）──
-        // 核心思路：constructor 阶段不碰 ObjC runtime swizzling，
-        // 避免与微信自身的 +load / constructor 初始化流程冲突导致闪退。
-        // dispatch_after 1 秒后微信已完成自身初始化，此时 swizzling 安全。
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+        // ── 第四步：延迟安装 ObjC hooks ──
+        bootlog("[CSTR] step6: 调度 dispatch_after (1.0s 后安装 ObjC hooks)...");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            bootlog("[DELAY] step7: 延迟块开始执行");
             install_objc_hooks();
+            bootlog("[DELAY] step8: ObjC hooks 已安装");
             start_heartbeat_delayed();
-            NSLog(@"[libiPadSpoof] ✅ ObjC hooks 已延迟安装 (enabled=%d, product=%@)",
-                  g_enabled, g_productType);
+            bootlogf("[DELAY] step9: 全部完成 (enabled=%d)", g_enabled);
         });
 
-        NSLog(@"[libiPadSpoof] 📦 constructor 完成，等待 App 启动后安装 ObjC hooks...");
+        bootlog("[CSTR] step6: constructor 完成，等待延迟块执行...");
     }
 }
