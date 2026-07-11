@@ -402,6 +402,7 @@ SWIFT_FILES=(
     "$SRC_DIR/SpoofConfig.swift"
     "$SRC_DIR/SpoofSettingsViewController.swift"
     "$SRC_DIR/MobileGestalt.swift"
+    "$SRC_DIR/DylibInjector.swift"
 )
 
 # 创建临时 Info.plist 复制
@@ -438,6 +439,27 @@ chmod +x "$APP_DIR/$APP_NAME"
 
 cp "$SRC_DIR/Info.plist" "$APP_DIR/Info.plist"
 cp "$SRC_DIR/TrollServer.entitlements" "$APP_DIR/"
+
+# 把 dylib 打包进 App 的 Resources（运行时可读取并注入到微信/QQ）
+DYLIB_SRC="$SCRIPT_DIR/spoof/libiPadSpoof.dylib"
+FOUND_DYLIB=false
+for tryPath in \
+    "$DYLIB_SRC" \
+    "$PROJECT_DIR/spoof/libiPadSpoof.dylib" \
+    "$BUILD_DIR/libiPadSpoof.dylib" \
+    "$SCRIPT_DIR/libiPadSpoof.dylib" \
+    ; do
+    if [ -f "$tryPath" ]; then
+        cp "$tryPath" "$APP_DIR/libiPadSpoof.dylib"
+        echo "  ✅ libiPadSpoof.dylib 已打包到 .app bundle (from $tryPath)"
+        FOUND_DYLIB=true
+        break
+    fi
+done
+if [ "$FOUND_DYLIB" = false ]; then
+    echo "  ⚠️  libiPadSpoof.dylib 未找到，注入功能将不可用"
+    echo "     搜索路径: $DYLIB_SRC"
+fi
 
 # 复制 AppIcon（如果有）
 if [ -d "$SRC_DIR/Assets.xcassets/AppIcon.appiconset" ]; then

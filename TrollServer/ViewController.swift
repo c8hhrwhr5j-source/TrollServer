@@ -31,6 +31,13 @@ class ViewController: UIViewController {
     private let spoofSettingsBtn = UIButton(type: .system)
     private let gestaltStatusLabel = UILabel()
 
+    // dylib 注入区域
+    private let injectSectionTitle = UILabel()
+    private var injectCards: [UIView] = []
+    private var injectButtons: [UIButton] = []
+    private var injectStatusLabels: [UILabel] = []
+    private var injectRestoreButtons: [UIButton] = []
+
     // 定时刷新
     private var refreshTimer: Timer?
 
@@ -45,6 +52,11 @@ class ViewController: UIViewController {
         updateSpoofStatus()
         startRefreshTimer()
         updateStatus()
+
+        // 后台扫描微信/QQ 安装状态
+        DispatchQueue.global().async { [weak self] in
+            self?.scanAndUpdateInjectUI()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -237,6 +249,12 @@ class ViewController: UIViewController {
             }
         }()
 
+        // ---- dylib 注入区域 ----
+        injectSectionTitle.text = "💉 dylib 注入微信/QQ"
+        injectSectionTitle.font = UIFont.boldSystemFont(ofSize: 16)
+        injectSectionTitle.textColor = .label
+        injectSectionTitle.translatesAutoresizingMaskIntoConstraints = false
+
         // 使用 UIScrollView 包裹所有内容, 支持垂直滚动,
         // 保证小屏设备上最底部的设备伪装按钮也能完整可见
         let scrollView = UIScrollView()
@@ -256,6 +274,13 @@ class ViewController: UIViewController {
         contentView.addSubview(scriptCard)
         contentView.addSubview(gestaltSectionTitle)
         contentView.addSubview(gestaltCard)
+        contentView.addSubview(injectSectionTitle)
+
+        // 动态创建注入卡片
+        buildInjectCards()
+        for card in injectCards {
+            contentView.addSubview(card)
+        }
 
         NSLayoutConstraint.activate([
             // 滚动容器铺满整个视图
@@ -316,9 +341,25 @@ class ViewController: UIViewController {
             gestaltStack.trailingAnchor.constraint(equalTo: gestaltCard.trailingAnchor, constant: -16),
             gestaltStack.bottomAnchor.constraint(equalTo: gestaltCard.bottomAnchor, constant: -16),
 
-            // 关键: 内容底部锚定, 否则最后一块(伪装按钮)会被挤出屏幕且无法滚动
-            gestaltCard.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
+            // dylib 注入区域
+            injectSectionTitle.topAnchor.constraint(equalTo: gestaltCard.bottomAnchor, constant: 28),
+            injectSectionTitle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+
+            // 关键: 内容底部锚定, 否则最后一块(注入按钮)会被挤出屏幕且无法滚动
+            (injectCards.last ?? gestaltCard).bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
         ])
+
+        // 动态注入卡片约束
+        for (i, card) in injectCards.enumerated() {
+            let topAnchor = (i == 0)
+                ? card.topAnchor.constraint(equalTo: injectSectionTitle.bottomAnchor, constant: 10)
+                : card.topAnchor.constraint(equalTo: injectCards[i-1].bottomAnchor, constant: 12)
+            NSLayoutConstraint.activate([
+                topAnchor,
+                card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+                card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            ])
+        }
     }
 
     // ===================== 定时刷新 =====================
@@ -571,6 +612,177 @@ class ViewController: UIViewController {
         let vc = SpoofSettingsViewController()
         let nav = UINavigationController(rootViewController: vc)
         present(nav, animated: true)
+    }
+
+    // ===================== dylib 注入 =====================
+
+    private func buildInjectCards() {
+        injectCards.removeAll(); injectButtons.removeAll()
+        injectStatusLabels.removeAll(); injectRestoreButtons.removeAll()
+
+        for target in InjectTarget.all {
+            let card = UIView()
+            card.backgroundColor = .secondarySystemGroupedBackground
+            card.layer.cornerRadius = 12
+            card.translatesAutoresizingMaskIntoConstraints = false
+
+            let titleLabel = UILabel()
+            titleLabel.text = "\(target.icon) \(target.name)"
+            titleLabel.font = UIFont.boldSystemFont(ofSize: 15)
+            titleLabel.textColor = .label
+
+            let statusLabel = UILabel()
+            statusLabel.text = "未扫描"
+            statusLabel.font = UIFont.systemFont(ofSize: 12)
+            statusLabel.textColor = .secondaryLabel
+            statusLabel.numberOfLines = 0
+            injectStatusLabels.append(statusLabel)
+
+            let injectBtn = UIButton(type: .system)
+            injectBtn.setTitle("💉 注入", for: .normal)
+            injectBtn.setTitleColor(.white, for: .normal)
+            injectBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 13)
+            injectBtn.backgroundColor = .systemGreen
+            injectBtn.layer.cornerRadius = 8
+            injectBtn.contentEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+            injectBtn.tag = injectButtons.count
+            injectBtn.addTarget(self, action: #selector(injectTapped(_:)), for: .touchUpInside)
+            injectBtn.isEnabled = false
+            injectButtons.append(injectBtn)
+
+            let restoreBtn = UIButton(type: .system)
+            restoreBtn.setTitle("↩ 恢复", for: .normal)
+            restoreBtn.setTitleColor(.white, for: .normal)
+            restoreBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 13)
+            restoreBtn.backgroundColor = .systemOrange
+            restoreBtn.layer.cornerRadius = 8
+            restoreBtn.contentEdgeInsets = UIEdgeInsets(top: 8, left: 16, bottom: 8, right: 16)
+            restoreBtn.tag = injectRestoreButtons.count
+            restoreBtn.addTarget(self, action: #selector(restoreTapped(_:)), for: .touchUpInside)
+            restoreBtn.isEnabled = false
+            injectRestoreButtons.append(restoreBtn)
+
+            let btnRow = UIStackView(arrangedSubviews: [injectBtn, restoreBtn])
+            btnRow.axis = .horizontal
+            btnRow.spacing = 8
+
+            let stack = UIStackView(arrangedSubviews: [titleLabel, statusLabel, btnRow])
+            stack.axis = .vertical
+            stack.spacing = 6
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            card.addSubview(stack)
+
+            NSLayoutConstraint.activate([
+                stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+                stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+                stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+                stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12),
+            ])
+
+            injectCards.append(card)
+        }
+    }
+
+    private func scanAndUpdateInjectUI() {
+        let apps = DylibInjector.scanInstalledApps()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            for (i, target) in InjectTarget.all.enumerated() {
+                guard i < self.injectStatusLabels.count else { break }
+                if let found = apps.first(where: { $0.target.id == target.id }) {
+                    let injected = DylibInjector.isInjected(appPath: found.appPath)
+                    self.injectStatusLabels[i].text = injected ? "✅ 已注入" : "📦 已安装，可注入"
+                    self.injectStatusLabels[i].textColor = injected ? .systemGreen : .systemOrange
+                    self.injectButtons[i].isEnabled = !injected
+                    self.injectButtons[i].setTitle(injected ? "✅ 已注入" : "💉 注入", for: .normal)
+                    self.injectButtons[i].backgroundColor = injected ? .systemGray : .systemGreen
+                    self.injectRestoreButtons[i].isEnabled = injected
+                } else {
+                    self.injectStatusLabels[i].text = "❌ 未安装 \(target.name)"
+                    self.injectStatusLabels[i].textColor = .systemRed
+                    self.injectButtons[i].isEnabled = false
+                    self.injectRestoreButtons[i].isEnabled = false
+                }
+            }
+        }
+    }
+
+    @objc private func injectTapped(_ sender: UIButton) {
+        let idx = sender.tag
+        guard idx < InjectTarget.all.count else { return }
+        let target = InjectTarget.all[idx]
+
+        injectButtons[idx].isEnabled = false
+        injectButtons[idx].setTitle("⏳ 注入中...", for: .normal)
+        injectStatusLabels[idx].text = "⏳ 正在注入 \(target.name)..."
+
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            let apps = DylibInjector.scanInstalledApps()
+            guard let found = apps.first(where: { $0.target.id == target.id }) else {
+                DispatchQueue.main.async {
+                    self.injectStatusLabels[idx].text = "❌ 未找到 \(target.name)"
+                    self.injectButtons[idx].isEnabled = false
+                    self.showAlert(title: "注入失败", message: "未找到 \(target.name) App，请先安装")
+                }
+                return
+            }
+            let result = DylibInjector.inject(appPath: found.appPath)
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let msg):
+                    self.injectStatusLabels[idx].text = "✅ 已注入"
+                    self.injectStatusLabels[idx].textColor = .systemGreen
+                    self.injectButtons[idx].setTitle("✅ 已注入", for: .normal)
+                    self.injectButtons[idx].backgroundColor = .systemGray
+                    self.injectRestoreButtons[idx].isEnabled = true
+                    self.showAlert(title: "\(target.icon) \(target.name)", message: msg)
+                case .failure(let err):
+                    self.injectButtons[idx].isEnabled = true
+                    self.injectButtons[idx].setTitle("💉 重试", for: .normal)
+                    self.injectStatusLabels[idx].text = "❌ 注入失败"
+                    self.injectStatusLabels[idx].textColor = .systemRed
+                    self.showAlert(title: "注入失败: \(target.name)", message: err.localizedDescription, showLogButton: true)
+                }
+            }
+        }
+    }
+
+    @objc private func restoreTapped(_ sender: UIButton) {
+        let idx = sender.tag
+        guard idx < InjectTarget.all.count else { return }
+        let target = InjectTarget.all[idx]
+
+        injectRestoreButtons[idx].isEnabled = false
+        injectRestoreButtons[idx].setTitle("⏳ 恢复中...", for: .normal)
+
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            let apps = DylibInjector.scanInstalledApps()
+            guard let found = apps.first(where: { $0.target.id == target.id }) else {
+                DispatchQueue.main.async {
+                    self.showAlert(title: "恢复失败", message: "未找到 \(target.name) App")
+                    self.injectRestoreButtons[idx].isEnabled = true
+                }
+                return
+            }
+            let result = DylibInjector.restore(appPath: found.appPath)
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let msg):
+                    self.injectStatusLabels[idx].text = "📦 已安装，可注入"
+                    self.injectStatusLabels[idx].textColor = .systemOrange
+                    self.injectButtons[idx].isEnabled = true
+                    self.injectButtons[idx].setTitle("💉 注入", for: .normal)
+                    self.injectButtons[idx].backgroundColor = .systemGreen
+                    self.injectRestoreButtons[idx].setTitle("↩ 恢复", for: .normal)
+                    self.showAlert(title: "\(target.icon) \(target.name)", message: msg)
+                case .failure(let err):
+                    self.injectRestoreButtons[idx].isEnabled = true
+                    self.showAlert(title: "恢复失败", message: err.localizedDescription)
+                }
+            }
+        }
     }
 
     private func updateSpoofStatus() {
