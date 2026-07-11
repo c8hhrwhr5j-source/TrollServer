@@ -37,6 +37,8 @@
  *   - 手动 insert_dylib 进重签 IPA 后 TrollStore 安装
  */
 
+#import <spawn.h>
+#import <sys/wait.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -113,14 +115,19 @@ static NSDictionary *fetch_config_via_http(void) {
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
         req.HTTPMethod = @"GET";
         req.timeoutInterval = 1.5;
-        // 注意：这里不能走被 Hook 的 setValue:forHTTPHeaderField:
-        NSURLResponse *resp = nil;
-        NSError *err = nil;
-        NSData *data = [NSURLConnection sendSynchronousRequest:req
-                                             returningResponse:&resp
-                                                         error:&err];
-        if (!data || err) return nil;
-        return [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+
+        // 使用 NSURLSession 同步（dispatch semaphore 阻塞）
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        __block NSData *resultData = nil;
+        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+        [[session dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            resultData = data;
+            dispatch_semaphore_signal(sem);
+        }] resume];
+        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)));
+        if (!resultData) return nil;
+        return [NSJSONSerialization JSONObjectWithData:resultData options:0 error:nil];
     }
 }
 
@@ -426,6 +433,28 @@ static CFPropertyListRef my_CFPrefsCopyAppValue(CFStringRef key, CFStringRef app
 // ──── CTTelephonyNetworkInfo（隐藏蜂窝能力）────
 /// WiFi-only iPad 不应有蜂窝运营商信息
 /// 注意：CTTelephony 是私有框架，因此用 NSClassFromString 动态获取
+/// 方法声明在 NSObject category 上，通过运行时交换到 CTTelephonyNetworkInfo
+@interface NSObject (SpoofTelephony)
+- (id)spoof_subscriberCellularProvider;
+- (NSDictionary *)spoof_serviceSubscriberCellularProviders;
+- (NSString *)spoof_currentRadioAccessTechnology;
+@end
+
+@implementation NSObject (SpoofTelephony)
+- (id)spoof_subscriberCellularProvider {
+    refresh_config_if_needed();
+    return g_enabled ? nil : [self spoof_subscriberCellularProvider];
+}
+- (NSDictionary *)spoof_serviceSubscriberCellularProviders {
+    refresh_config_if_needed();
+    return g_enabled ? @{} : [self spoof_serviceSubscriberCellularProviders];
+}
+- (NSString *)spoof_currentRadioAccessTechnology {
+    refresh_config_if_needed();
+    return g_enabled ? nil : [self spoof_currentRadioAccessTechnology];
+}
+@end
+
 static void hook_telephony_if_available(void) {
     Class ctn = NSClassFromString(@"CTTelephonyNetworkInfo");
     if (!ctn) return;
@@ -452,27 +481,6 @@ static void hook_telephony_if_available(void) {
 
     NSLog(@"[libiPadSpoof] CTTelephony hooks installed");
 }
-
-@interface CTTelephonyNetworkInfo (SpoofExt)
-- (id)spoof_subscriberCellularProvider;
-- (NSDictionary *)spoof_serviceSubscriberCellularProviders;
-- (NSString *)spoof_currentRadioAccessTechnology;
-@end
-
-@implementation CTTelephonyNetworkInfo (SpoofExt)
-- (id)spoof_subscriberCellularProvider {
-    refresh_config_if_needed();
-    return g_enabled ? nil : [self spoof_subscriberCellularProvider];
-}
-- (NSDictionary *)spoof_serviceSubscriberCellularProviders {
-    refresh_config_if_needed();
-    return g_enabled ? @{} : [self spoof_serviceSubscriberCellularProviders];
-}
-- (NSString *)spoof_currentRadioAccessTechnology {
-    refresh_config_if_needed();
-    return g_enabled ? nil : [self spoof_currentRadioAccessTechnology];
-}
-@end
 
 
 // ──── User-Agent 伪装 ────
@@ -522,10 +530,11 @@ static NSString *spoof_ua_string(NSString *ua) {
 
 // ──── WKWebView / UIWebView User-Agent ────
 /// WeChat 内嵌浏览器也用 WebView，确保其 customUserAgent 也被伪装
-@interface WKWebView (SpoofExt)
+/// 方法声明在 NSObject category 上，通过运行时交换到 WKWebView
+@interface NSObject (SpoofWebView)
 - (NSString *)spoof_customUserAgent;
 @end
-@implementation WKWebView (SpoofExt)
+@implementation NSObject (SpoofWebView)
 - (NSString *)spoof_customUserAgent {
     NSString *ua = [self spoof_customUserAgent];
     refresh_config_if_needed();
@@ -567,8 +576,18 @@ static void start_heartbeat(void) {
                     if (g_heartbeatMissCount >= 3) {
                         NSLog(@"[libiPadSpoof] ⚠️ TrollServer 连续 %d 次不可达，尝试重启 daemon",
                               g_heartbeatMissCount);
-                        // 尝试通过 launchctl 重启 daemon
-                        system("launchctl kickstart -k system/com.trollserver.daemon 2>/dev/null");
+                        // 尝试通过 launchctl 重启 daemon（posix_spawn 替代 system()）
+                        pid_t pid;
+                        char *argv[] = {
+                            (char *)"/usr/bin/launchctl",
+                            (char *)"kickstart",
+                            (char *)"-k",
+                            (char *)"system/com.trollserver.daemon",
+                            NULL
+                        };
+                        if (posix_spawn(&pid, argv[0], NULL, NULL, argv, NULL) == 0) {
+                            waitpid(pid, NULL, 0);
+                        }
                         g_heartbeatMissCount = 0;
                     }
                 }
