@@ -37,6 +37,7 @@ class ViewController: UIViewController {
     private var injectButtons: [UIButton] = []
     private var injectStatusLabels: [UILabel] = []
     private var injectRestoreButtons: [UIButton] = []
+    private var injectIPAURLs: [URL?] = []
 
     // 定时刷新
     private var refreshTimer: Timer?
@@ -250,7 +251,7 @@ class ViewController: UIViewController {
         }()
 
         // ---- dylib 注入区域 ----
-        injectSectionTitle.text = "💉 dylib 注入微信/QQ"
+        injectSectionTitle.text = "📦 dylib 注入工具"
         injectSectionTitle.font = UIFont.boldSystemFont(ofSize: 16)
         injectSectionTitle.textColor = .label
         injectSectionTitle.translatesAutoresizingMaskIntoConstraints = false
@@ -619,6 +620,7 @@ class ViewController: UIViewController {
     private func buildInjectCards() {
         injectCards.removeAll(); injectButtons.removeAll()
         injectStatusLabels.removeAll(); injectRestoreButtons.removeAll()
+        injectIPAURLs.removeAll()
 
         for target in InjectTarget.all {
             let card = UIView()
@@ -649,6 +651,7 @@ class ViewController: UIViewController {
             injectBtn.addTarget(self, action: #selector(injectTapped(_:)), for: .touchUpInside)
             injectBtn.isEnabled = false
             injectButtons.append(injectBtn)
+            injectIPAURLs.append(nil)
 
             let restoreBtn = UIButton(type: .system)
             restoreBtn.setTitle("↩ 恢复", for: .normal)
@@ -691,12 +694,21 @@ class ViewController: UIViewController {
                 guard i < self.injectStatusLabels.count else { break }
                 if let found = apps.first(where: { $0.target.id == target.id }) {
                     let injected = DylibInjector.isInjected(appPath: found.appPath)
-                    self.injectStatusLabels[i].text = injected ? "✅ 已注入" : "📦 已安装，可注入"
-                    self.injectStatusLabels[i].textColor = injected ? .systemGreen : .systemOrange
-                    self.injectButtons[i].isEnabled = !injected
-                    self.injectButtons[i].setTitle(injected ? "✅ 已注入" : "💉 注入", for: .normal)
-                    self.injectButtons[i].backgroundColor = injected ? .systemGray : .systemGreen
-                    self.injectRestoreButtons[i].isEnabled = injected
+                    if injected {
+                        self.injectStatusLabels[i].text = "✅ 已注入（需重装恢复）"
+                        self.injectStatusLabels[i].textColor = .systemGreen
+                        self.injectButtons[i].isEnabled = true
+                        self.injectButtons[i].setTitle("📦 重新生成 IPA", for: .normal)
+                        self.injectButtons[i].backgroundColor = .systemBlue
+                    } else {
+                        self.injectStatusLabels[i].text = "📦 已安装，可生成 IPA"
+                        self.injectStatusLabels[i].textColor = .systemOrange
+                        self.injectButtons[i].isEnabled = true
+                        self.injectButtons[i].setTitle("📦 生成 IPA", for: .normal)
+                        self.injectButtons[i].backgroundColor = .systemGreen
+                    }
+                    self.injectRestoreButtons[i].isEnabled = true
+                    self.injectRestoreButtons[i].setTitle("↩ 恢复原版", for: .normal)
                 } else {
                     self.injectStatusLabels[i].text = "❌ 未安装 \(target.name)"
                     self.injectStatusLabels[i].textColor = .systemRed
@@ -713,8 +725,8 @@ class ViewController: UIViewController {
         let target = InjectTarget.all[idx]
 
         injectButtons[idx].isEnabled = false
-        injectButtons[idx].setTitle("⏳ 注入中...", for: .normal)
-        injectStatusLabels[idx].text = "⏳ 正在注入 \(target.name)..."
+        injectButtons[idx].setTitle("⏳ 生成中...", for: .normal)
+        injectStatusLabels[idx].text = "⏳ 正在生成 \(target.name) 的 IPA..."
 
         DispatchQueue.global().async { [weak self] in
             guard let self = self else { return }
@@ -723,29 +735,40 @@ class ViewController: UIViewController {
                 DispatchQueue.main.async {
                     self.injectStatusLabels[idx].text = "❌ 未找到 \(target.name)"
                     self.injectButtons[idx].isEnabled = false
-                    self.showAlert(title: "注入失败", message: "未找到 \(target.name) App，请先安装")
+                    self.showAlert(title: "生成失败", message: "未找到 \(target.name) App，请先安装")
                 }
                 return
             }
-            let result = DylibInjector.inject(appPath: found.appPath)
+            let result = DylibInjector.generateInjectedIPA(appPath: found.appPath)
             DispatchQueue.main.async {
                 switch result {
-                case .success(let msg):
-                    self.injectStatusLabels[idx].text = "✅ 已注入"
+                case .success(let ipaURL):
+                    self.injectIPAURLs[idx] = ipaURL
+                    self.injectStatusLabels[idx].text = "✅ IPA 已生成"
                     self.injectStatusLabels[idx].textColor = .systemGreen
-                    self.injectButtons[idx].setTitle("✅ 已注入", for: .normal)
-                    self.injectButtons[idx].backgroundColor = .systemGray
-                    self.injectRestoreButtons[idx].isEnabled = true
-                    self.showAlert(title: "\(target.icon) \(target.name)", message: msg)
+                    self.injectButtons[idx].setTitle("🚀 TrollStore 安装", for: .normal)
+                    self.injectButtons[idx].backgroundColor = .systemBlue
+                    self.injectButtons[idx].isEnabled = true
+                    // 切换按钮动作为安装
+                    self.injectButtons[idx].removeTarget(self, action: #selector(self.injectTapped(_:)), for: .touchUpInside)
+                    self.injectButtons[idx].addTarget(self, action: #selector(self.installTapped(_:)), for: .touchUpInside)
+                    self.showAlert(title: "\(target.icon) \(target.name) IPA 已生成",
+                        message: "IPA 路径: \(ipaURL.path)\n\n点击 '🚀 TrollStore 安装' 自动跳转安装。\n\n⚠️ 安装前请先备份微信/QQ 数据！")
                 case .failure(let err):
                     self.injectButtons[idx].isEnabled = true
-                    self.injectButtons[idx].setTitle("💉 重试", for: .normal)
-                    self.injectStatusLabels[idx].text = "❌ 注入失败"
+                    self.injectButtons[idx].setTitle("📦 重新生成", for: .normal)
+                    self.injectStatusLabels[idx].text = "❌ 生成失败"
                     self.injectStatusLabels[idx].textColor = .systemRed
-                    self.showAlert(title: "注入失败: \(target.name)", message: err.localizedDescription, showLogButton: true)
+                    self.showAlert(title: "生成失败: \(target.name)", message: err.localizedDescription, showLogButton: true)
                 }
             }
         }
+    }
+
+    @objc private func installTapped(_ sender: UIButton) {
+        let idx = sender.tag
+        guard idx < injectIPAURLs.count, let ipaURL = injectIPAURLs[idx] else { return }
+        DylibInjector.openTrollStoreInstall(ipaURL: ipaURL)
     }
 
     @objc private func restoreTapped(_ sender: UIButton) {
@@ -753,36 +776,9 @@ class ViewController: UIViewController {
         guard idx < InjectTarget.all.count else { return }
         let target = InjectTarget.all[idx]
 
-        injectRestoreButtons[idx].isEnabled = false
-        injectRestoreButtons[idx].setTitle("⏳ 恢复中...", for: .normal)
-
-        DispatchQueue.global().async { [weak self] in
-            guard let self = self else { return }
-            let apps = DylibInjector.scanInstalledApps()
-            guard let found = apps.first(where: { $0.target.id == target.id }) else {
-                DispatchQueue.main.async {
-                    self.showAlert(title: "恢复失败", message: "未找到 \(target.name) App")
-                    self.injectRestoreButtons[idx].isEnabled = true
-                }
-                return
-            }
-            let result = DylibInjector.restore(appPath: found.appPath)
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let msg):
-                    self.injectStatusLabels[idx].text = "📦 已安装，可注入"
-                    self.injectStatusLabels[idx].textColor = .systemOrange
-                    self.injectButtons[idx].isEnabled = true
-                    self.injectButtons[idx].setTitle("💉 注入", for: .normal)
-                    self.injectButtons[idx].backgroundColor = .systemGreen
-                    self.injectRestoreButtons[idx].setTitle("↩ 恢复", for: .normal)
-                    self.showAlert(title: "\(target.icon) \(target.name)", message: msg)
-                case .failure(let err):
-                    self.injectRestoreButtons[idx].isEnabled = true
-                    self.showAlert(title: "恢复失败", message: err.localizedDescription)
-                }
-            }
-        }
+        let alert = UIAlertController(title: "↩ 恢复 \(target.icon) \(target.name) 原版", message: "请通过 TrollStore 卸载修改版，然后重新安装 App Store 原版。\n\n注意：卸载前请备份聊天记录！", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "知道了", style: .default))
+        present(alert, animated: true)
     }
 
     private func updateSpoofStatus() {

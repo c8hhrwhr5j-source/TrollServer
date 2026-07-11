@@ -69,22 +69,22 @@ enum DylibInjector {
         return results
     }
 
-    /// 判断某 App 是否已注入
+    /// 判断某 App 是否已注入（通过检查二进制中的 LC_LOAD_DYLIB）
     static func isInjected(appPath: String) -> Bool {
         let execName = (appPath as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
         let binaryPath = "\(appPath)/\(execName)"
         return hasDylibLoadCommand(at: binaryPath, dylibName: dylibName)
     }
 
-    // MARK: - 注入
+    // MARK: - 生成已注入的 IPA
 
-    /// 尝试注入 dylib 到目标 App
-    static func inject(appPath: String) -> Result<String, InjectError> {
+    /// 在 TrollServer 临时目录中复制 App → 注入 dylib → 打包 IPA
+    /// 返回 IPA 文件的本地 URL，可通过 TrollStore 安装
+    static func generateInjectedIPA(appPath: String) -> Result<URL, InjectError> {
         let fm = FileManager.default
         let execName = (appPath as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
+        let appName = (appPath as NSString).lastPathComponent
         let binaryPath = "\(appPath)/\(execName)"
-        let frameworksPath = "\(appPath)/Frameworks"
-        let dylibDestPath = "\(frameworksPath)/\(dylibName)"
         let loadPath = "@executable_path/Frameworks/\(dylibName)"
 
         // 找到内嵌 dylib
@@ -99,56 +99,62 @@ enum DylibInjector {
             return .failure(.dylibNotFound)
         }
 
-        // 检查是否已注入
+        // 检查是否已注入（扫描原始二进制）
         if hasDylibLoadCommand(at: binaryPath, dylibName: dylibName) {
             log("⚠️ \(execName) 已注入过")
             return .failure(.alreadyInjected)
         }
 
-        // 验证二进制可读写
-        guard fm.isReadableFile(atPath: binaryPath) else {
-            log("❌ 二进制不可读: \(binaryPath)")
-            return .failure(.binaryNotReadable)
-        }
-
-        // 1. 备份二进制（第一次注入时）— 使用 cp 命令绕过沙盒
-        let backupPath = "\(binaryPath).trollserver_backup"
-        if !fm.fileExists(atPath: backupPath) {
-            let r = runShellCommand("cp '\(binaryPath)' '\(backupPath)' 2>&1")
-            if r.exitCode != 0 {
-                log("⚠️ 备份失败 (cp exit=\(r.exitCode)): \(r.stdout)")
-                // 不阻塞，继续尝试注入
-            } else {
-                log("✅ 已备份: \(backupPath)")
-            }
-        }
-
-        // 2. 创建 Frameworks 目录 — 使用 mkdir 命令
-        if !fm.fileExists(atPath: frameworksPath) {
-            let r = runShellCommand("mkdir -p '\(frameworksPath)' 2>&1")
-            if r.exitCode != 0 {
-                log("❌ 创建 Frameworks 目录失败 (mkdir exit=\(r.exitCode)): \(r.stdout)")
-                return .failure(.cantCreateFrameworks("mkdir exit=\(r.exitCode): \(r.stdout)"))
-            }
-            _ = runShellCommand("chmod 755 '\(frameworksPath)' 2>&1")
-        }
-
-        // 3. 复制 dylib — 使用 cp 命令
-        if fm.fileExists(atPath: dylibDestPath) {
-            _ = runShellCommand("rm -f '\(dylibDestPath)' 2>&1")
-        }
-        let cpResult = runShellCommand("cp '\(dylibSrc)' '\(dylibDestPath)' 2>&1")
-        if cpResult.exitCode != 0 {
-            log("❌ 复制 dylib 失败 (cp exit=\(cpResult.exitCode)): \(cpResult.stdout)")
-            return .failure(.cantCopyDylib("cp exit=\(cpResult.exitCode): \(cpResult.stdout)"))
-        }
-        _ = runShellCommand("chmod 755 '\(dylibDestPath)' 2>&1")
-        log("✅ dylib 已复制到 \(dylibDestPath)")
-
-        // 4. 修补 Mach-O 二进制
+        // 1. 创建临时工作目录
+        let uuid = UUID().uuidString
+        let tmpDir = NSTemporaryDirectory() + "trollserver_inject_\(uuid)"
+        let fmURL = URL(fileURLWithPath: tmpDir)
         do {
-            try patchMachO(at: binaryPath, dylibLoadPath: loadPath)
-            log("✅ 二进制已修补: \(binaryPath)")
+            try fm.createDirectory(at: fmURL, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            log("❌ 创建临时目录失败: \(error)")
+            return .failure(.cantCreateTempDir("\(error)"))
+        }
+        log("📁 临时目录: \(tmpDir)")
+
+        // 2. 复制整个 App Bundle 到临时目录（沙盒内可写自己的 tmp）
+        let tmpAppPath = "\(tmpDir)/\(appName)"
+        do {
+            try fm.copyItem(atPath: appPath, toPath: tmpAppPath)
+            log("✅ 已复制 App Bundle 到临时目录")
+        } catch {
+            log("❌ 复制 App Bundle 失败: \(error)")
+            return .failure(.cantCopyApp("\(error)"))
+        }
+
+        let tmpBinaryPath = "\(tmpAppPath)/\(execName)"
+        let tmpFrameworksPath = "\(tmpAppPath)/Frameworks"
+        let tmpDylibDestPath = "\(tmpFrameworksPath)/\(dylibName)"
+
+        // 3. 创建 Frameworks 目录
+        if !fm.fileExists(atPath: tmpFrameworksPath) {
+            do {
+                try fm.createDirectory(atPath: tmpFrameworksPath, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+            } catch {
+                log("❌ 创建 Frameworks 目录失败: \(error)")
+                return .failure(.cantCreateFrameworks("\(error)"))
+            }
+        }
+
+        // 4. 复制 dylib 到临时 App
+        do {
+            try fm.copyItem(atPath: dylibSrc, toPath: tmpDylibDestPath)
+        } catch {
+            log("❌ 复制 dylib 失败: \(error)")
+            return .failure(.cantCopyDylib("\(error)"))
+        }
+        chmod(tmpDylibDestPath, 0o755)
+        log("✅ dylib 已复制到临时 App")
+
+        // 5. 在临时目录中修补 Mach-O 二进制
+        do {
+            try patchMachO(at: tmpBinaryPath, dylibLoadPath: loadPath)
+            log("✅ 二进制已修补")
         } catch let e as InjectError {
             log("❌ 修补失败: \(e)")
             return .failure(e)
@@ -157,98 +163,84 @@ enum DylibInjector {
             return .failure(.patchFailed("\(error)"))
         }
 
-        // 5. 尝试重签（用 ldid 修签名，让 App 能启动）
-        let signResult = runShellCommand("/usr/bin/ldid -S \(binaryPath)")
+        // 6. 去除代码签名（用 ldid 或 codesign）
+        let signResult = runShellCommand("/usr/bin/ldid -S '\(tmpBinaryPath)' 2>&1")
         if signResult.exitCode == 0 {
             log("✅ ldid 重签成功")
         } else {
-            log("⚠️ ldid 重签返回 exit=\(signResult.exitCode)（可能不影响 TrollStore 环境）")
+            log("⚠️ ldid 重签返回 exit=\(signResult.exitCode)（可能不影响 TrollStore 安装）")
         }
 
-        // 6. 写入配置
-        SpoofConfig.isEnabled = true
+        // 7. 创建 Payload 目录并放入 .app
+        let payloadDir = "\(tmpDir)/Payload"
+        do {
+            try fm.createDirectory(atPath: payloadDir, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            log("❌ 创建 Payload 目录失败: \(error)")
+            return .failure(.packFailed("创建 Payload 失败: \(error)"))
+        }
+        do {
+            try fm.moveItem(atPath: tmpAppPath, toPath: "\(payloadDir)/\(appName)")
+        } catch {
+            log("❌ 移动 App 到 Payload 失败: \(error)")
+            return .failure(.packFailed("移动 App 失败: \(error)"))
+        }
 
-        return .success("✅ 注入成功！\n请上滑彻底关闭 \(execName)，重新打开即可生效")
+        // 8. 打包为 IPA（zip）
+        let ipaPath = "\(tmpDir)/\(execName)_injected.ipa"
+        let zipResult = runShellCommand("cd '\(tmpDir)' && /usr/bin/zip -qr '\(ipaPath)' Payload 2>&1")
+        if zipResult.exitCode != 0 {
+            log("❌ 打包 IPA 失败 (zip exit=\(zipResult.exitCode)): \(zipResult.stdout)")
+            return .failure(.packFailed("zip exit=\(zipResult.exitCode): \(zipResult.stdout)"))
+        }
+        log("✅ IPA 已打包: \(ipaPath)")
+
+        return .success(URL(fileURLWithPath: ipaPath))
     }
 
-    // MARK: - 恢复注入
+    // MARK: - TrollStore 安装
 
-    /// 从备份恢复 App 二进制
-    static func restore(appPath: String) -> Result<String, InjectError> {
-        let fm = FileManager.default
-        let execName = (appPath as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
-        let binaryPath = "\(appPath)/\(execName)"
-        let backupPath = "\(binaryPath).trollserver_backup"
-        let frameworksPath = "\(appPath)/Frameworks"
-        let dylibDestPath = "\(frameworksPath)/\(dylibName)"
-
-        guard fm.fileExists(atPath: backupPath) else {
-            return .failure(.noBackup)
+    /// 通过 TrollStore URL scheme 安装 IPA
+    static func openTrollStoreInstall(ipaURL: URL) {
+        // TrollStore 支持 trollstore://install?url=file:///path/to.ipa
+        let encodedPath = ipaURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if let url = URL(string: "trollstore://install?url=\(encodedPath)"),
+           UIApplication.shared.canOpenURL(url) {
+            UIApplication.shared.open(url)
+        } else {
+            // 备用：分享 IPA 文件
+            let activityVC = UIActivityViewController(activityItems: [ipaURL], applicationActivities: nil)
+            if let root = UIApplication.shared.keyWindow?.rootViewController {
+                root.present(activityVC, animated: true)
+            }
         }
-
-        // 恢复二进制 — 使用 cp 命令绕过沙盒
-        let rmResult = runShellCommand("rm -f '\(binaryPath)' 2>&1")
-        if rmResult.exitCode != 0 {
-            log("⚠️ 删除旧二进制警告 (rm exit=\(rmResult.exitCode)): \(rmResult.stdout)")
-        }
-        let cpResult = runShellCommand("cp '\(backupPath)' '\(binaryPath)' 2>&1")
-        if cpResult.exitCode != 0 {
-            return .failure(.restoreFailed("cp exit=\(cpResult.exitCode): \(cpResult.stdout)"))
-        }
-        _ = runShellCommand("chmod 755 '\(binaryPath)' 2>&1")
-
-        // 删除 dylib
-        _ = runShellCommand("rm -f '\(dylibDestPath)' 2>&1")
-
-        // 重签
-        _ = runShellCommand("/usr/bin/ldid -S \(binaryPath)")
-
-        log("✅ 已恢复 \(execName)")
-        return .success("已恢复 \(execName)")
     }
 
     // MARK: - Mach-O 修补
 
     /// 在 Fat/单架构 Mach-O 中注入 LC_LOAD_DYLIB，并去除 LC_CODE_SIGNATURE
-    /// 使用临时文件 + cp 命令绕过沙盒写入限制
     static func patchMachO(at path: String, dylibLoadPath: String) throws {
         let url = URL(fileURLWithPath: path)
         var data = try Data(contentsOf: url)
 
         guard data.count >= 4 else { throw InjectError.invalidBinary }
 
-        // 读取魔数
         let magic = readU32(data: data, offset: 0)
         if magic == MH_MAGIC_64 || magic == MH_CIGAM_64 {
             try patchMachO64(data: &data, at: 0, dylibLoadPath: dylibLoadPath)
         } else if magic == 0xCAFEBABE || magic == 0xBEBAFECA {
-            // Fat binary
             try patchFatBinary(data: &data, dylibLoadPath: dylibLoadPath)
         } else {
             throw InjectError.invalidBinary
         }
 
-        // 先写入沙盒临时文件，再用 cp 命令覆盖目标（绕过沙盒）
-        let tmpPath = "/tmp/trollserver_patch_\(UUID().uuidString).tmp"
-        let tmpURL = URL(fileURLWithPath: tmpPath)
-        try data.write(to: tmpURL)
-        defer { _ = runShellCommand("rm -f '\(tmpPath)' 2>&1") }
-
-        let cpResult = runShellCommand("cp '\(tmpPath)' '\(path)' 2>&1")
-        if cpResult.exitCode != 0 {
-            log("❌ 覆盖二进制失败 (cp exit=\(cpResult.exitCode)): \(cpResult.stdout)")
-            throw InjectError.patchFailed("cp exit=\(cpResult.exitCode): \(cpResult.stdout)")
-        }
-        _ = runShellCommand("chmod 755 '\(path)' 2>&1")
+        try data.write(to: url)
     }
-
-    // MARK: - 私有
 
     private static func patchFatBinary(data: inout Data, dylibLoadPath: String) throws {
         let isSwapped = (readU32(data: data, offset: 0) == 0xBEBAFECA)
         let narch = readU32(data: data, offset: 4, swapped: isSwapped)
 
-        // 遍历 fat_arch 找 arm64 切片
         var foundArm64 = false
         for i in 0..<Int(narch) {
             let archOffset = 8 + i * 20
@@ -256,24 +248,20 @@ enum DylibInjector {
             if cputype == 0x0100000C { // CPU_TYPE_ARM64
                 let sliceOffset = Int(readU32(data: data, offset: archOffset + 8, swapped: isSwapped))
                 let sliceSize   = Int(readU32(data: data, offset: archOffset + 12, swapped: isSwapped))
-                // 切片数据从 sliceOffset 开始
                 var sliceData = data.subdata(in: sliceOffset..<sliceOffset + sliceSize)
                 try patchMachO64(data: &sliceData, at: 0, dylibLoadPath: dylibLoadPath)
 
-                // 对齐到页大小（0x4000）
                 let aligned = ((sliceData.count + 0x3FFF) / 0x4000) * 0x4000
                 if aligned > sliceData.count {
                     sliceData.append(Data(repeating: 0, count: aligned - sliceData.count))
                 }
 
-                // 替换原切片 + 更新 fat_arch size
                 data.replaceSubrange(sliceOffset..<sliceOffset + sliceSize, with: sliceData)
                 let newSliceSize = UInt32(aligned)
                 writeU32(data: &data, offset: archOffset + 12, value: newSliceSize, swapped: isSwapped)
                 foundArm64 = true
             }
         }
-
         guard foundArm64 else { throw InjectError.noArm64Slice }
     }
 
@@ -284,56 +272,42 @@ enum DylibInjector {
         var ncmds      = readU32(data: data, offset: baseOffset + 16, swapped: isSwapped)
         var sizeofcmds = readU32(data: data, offset: baseOffset + 20, swapped: isSwapped)
 
-        // ------ 遍历 load commands ------
-        var offset = baseOffset + 32 // sizeof mach_header_64
+        var offset = baseOffset + 32
         var codeSigCmdOffset: Int? = nil
 
         for _ in 0..<Int(ncmds) {
             let lcCmd  = readU32(data: data, offset: offset, swapped: isSwapped)
             let lcSize = readU32(data: data, offset: offset + 4, swapped: isSwapped)
-
             if lcCmd == LC_CODE_SIGNATURE {
                 codeSigCmdOffset = offset
             }
-
             offset += Int(lcSize)
         }
 
-        let endOfLC = offset // 当前所有 load commands 结束位置
+        let endOfLC = offset
 
-        // ------ 去除代码签名 ------
         if let sigOffset = codeSigCmdOffset {
-            // 把 LC_CODE_SIGNATURE 的 cmd 设为 0（使内核忽略）
             writeU32(data: &data, offset: sigOffset, value: 0, swapped: isSwapped)
         }
 
-        // ------ 构建 LC_LOAD_DYLIB ------
         let pathBytes  = Array(dylibLoadPath.utf8) + [0]
-        let cmdSizeRaw = 24 + pathBytes.count   // sizeof(dylib_command) + path+'\0'
-        let cmdSize    = ((cmdSizeRaw + 7) / 8) * 8  // 8 字节对齐
+        let cmdSizeRaw = 24 + pathBytes.count
+        let cmdSize    = ((cmdSizeRaw + 7) / 8) * 8
 
         var cmdData = Data(capacity: cmdSize)
-        // cmd
         appendU32(to: &cmdData, value: LC_LOAD_DYLIB, swapped: isSwapped)
-        // cmdsize
         appendU32(to: &cmdData, value: UInt32(cmdSize), swapped: isSwapped)
-        // dylib.name_offset (always 24)
         appendU32(to: &cmdData, value: 24, swapped: isSwapped)
-        // dylib.timestamp
         appendU32(to: &cmdData, value: 2, swapped: isSwapped)
-        // dylib.current_version / compatibility_version
         appendU32(to: &cmdData, value: 0x00010000, swapped: isSwapped)
         appendU32(to: &cmdData, value: 0x00010000, swapped: isSwapped)
-        // path string + padding
         cmdData.append(contentsOf: pathBytes)
         if cmdData.count < cmdSize {
             cmdData.append(Data(repeating: 0, count: cmdSize - cmdData.count))
         }
 
-        // ------ 插入新 load command ------
         data.insert(contentsOf: cmdData, at: endOfLC)
 
-        // ------ 更新 header ------
         ncmds      += 1
         sizeofcmds += UInt32(cmdSize)
         writeU32(data: &data, offset: baseOffset + 16, value: ncmds, swapped: isSwapped)
@@ -349,14 +323,12 @@ enum DylibInjector {
         var magic: UInt32 = 0
         guard fread(&magic, 4, 1, handle) == 1 else { return false }
 
-        // 跳过 fat 头部
         if magic == 0xCAFEBABE || magic == 0xBEBAFECA {
             let isSwapped = (magic == 0xBEBAFECA)
             var nfat: UInt32 = 0
             fseeko(handle, 4, SEEK_SET)
             guard fread(&nfat, 4, 1, handle) == 1 else { return false }
             if isSwapped { nfat = nfat.byteSwapped }
-            // 找 arm64 切片
             var found = false
             for i in 0..<Int(nfat) {
                 fseeko(handle, off_t(8 + i * 20 + 4), SEEK_SET)
@@ -382,13 +354,11 @@ enum DylibInjector {
         guard magic == MH_MAGIC_64 || magic == MH_CIGAM_64 else { return false }
         let isSwapped = (magic == MH_CIGAM_64)
 
-        // 读取 ncmds / sizeofcmds
         var header: [UInt32] = [0, 0, 0, 0]
         fseeko(handle, 12, SEEK_CUR)
         guard fread(&header, 4 * 4, 1, handle) == 1 else { return false }
-        // header[0]=filetype, header[1]=ncmds, header[2]=sizeofcmds, header[3]=flags
         let ncmds = isSwapped ? header[1].byteSwapped : header[1]
-        var lcOff = off_t(32) // skip mach_header_64
+        var lcOff = off_t(32)
 
         for _ in 0..<Int(ncmds) {
             fseeko(handle, lcOff, SEEK_SET)
@@ -398,11 +368,9 @@ enum DylibInjector {
             let size = isSwapped ? lc[1].byteSwapped : lc[1]
 
             if cmd == LC_LOAD_DYLIB {
-                // 读取整个 load command
                 fseeko(handle, lcOff, SEEK_SET)
                 var buf = [UInt8](repeating: 0, count: Int(size))
                 guard fread(&buf, buf.count, 1, handle) == 1 else { continue }
-                // name_offset at bytes 12-15
                 let no = readU32(buf: buf, offset: 12, swapped: isSwapped)
                 if no < size {
                     let nb = Array(buf[Int(no)...]).prefix(while: { $0 != 0 })
@@ -446,27 +414,27 @@ enum DylibInjector {
     enum InjectError: Error, CustomStringConvertible {
         case dylibNotFound
         case alreadyInjected
-        case binaryNotReadable
+        case cantCreateTempDir(String)
+        case cantCopyApp(String)
         case cantCreateFrameworks(String)
         case cantCopyDylib(String)
         case patchFailed(String)
         case invalidBinary
         case noArm64Slice
-        case noBackup
-        case restoreFailed(String)
+        case packFailed(String)
 
         var description: String {
             switch self {
             case .dylibNotFound:       return "内嵌 dylib 未找到，请重新构建 IPA"
             case .alreadyInjected:     return "已注入过，无需重复操作"
-            case .binaryNotReadable:    return "目标 App 二进制不可读（权限不足）"
+            case .cantCreateTempDir(let s): return "无法创建临时目录: \(s)"
+            case .cantCopyApp(let s):  return "无法复制 App Bundle: \(s)"
             case .cantCreateFrameworks(let s): return "无法创建 Frameworks 目录: \(s)"
             case .cantCopyDylib(let s): return "无法复制 dylib: \(s)"
             case .patchFailed(let s):   return "二进制修补失败: \(s)"
             case .invalidBinary:        return "无法识别 App 二进制格式"
             case .noArm64Slice:         return "Fat binary 中未找到 arm64 切片"
-            case .noBackup:             return "未找到注入前备份，无法恢复"
-            case .restoreFailed(let s): return "恢复失败: \(s)"
+            case .packFailed(let s):    return "IPA 打包失败: \(s)"
             }
         }
     }
