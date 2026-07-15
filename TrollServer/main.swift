@@ -50,9 +50,9 @@ try? FileManager.default.createDirectory(
     withIntermediateDirectories: true
 )
 
-let logMsg = "[\(Date())] TrollServer v3.1 daemon starting (PID=\(getpid()))\n"
+let logMsg = "[\(Date())] TrollServer v3.1 daemon starting (PID=\(getpid()), UID=\(getuid()))\n"
 try? logMsg.data(using: .utf8)?.appendTo(file: daemonLogPath)
-print("[TrollServer] 🖥️  Daemon mode starting (PID=\(getpid()))...")
+print("[TrollServer] 🖥️  Daemon mode starting (PID=\(getpid()), UID=\(getuid()))...")
 
 setupExceptionHandler()
 
@@ -79,9 +79,9 @@ if CommandLine.arguments.contains("--daemon") {
         withIntermediateDirectories: true
     )
 
-    let logMsg = "[\(Date())] TrollServer v3.1 daemon starting (PID=\(getpid()))\n"
+    let logMsg = "[\(Date())] TrollServer v3.1 daemon starting (PID=\(getpid()), UID=\(getuid()))\n"
     try? logMsg.data(using: .utf8)?.appendTo(file: daemonLogPath)
-    print("[TrollServer] 🖥️  Daemon mode starting (PID=\(getpid()))...")
+    print("[TrollServer] 🖥️  Daemon mode starting (PID=\(getpid()), UID=\(getuid()))...")
 
     setupExceptionHandler()
 

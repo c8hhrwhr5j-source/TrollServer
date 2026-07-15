@@ -58,7 +58,19 @@ enum DaemonBootstrap {
                 try FileManager.default.removeItem(atPath: daemonBinaryPath)
             }
             try FileManager.default.copyItem(atPath: selfPath, toPath: daemonBinaryPath)
-            chmod(daemonBinaryPath, 0o755)
+
+            let currentUID = getuid()
+            print("[DaemonBootstrap] ℹ️ 当前 UID=\(currentUID)")
+            if currentUID == 0 {
+                // 以 root 安装时，设置 setuid 位让 daemon 启动时自动获得 root
+                chmod(daemonBinaryPath, 0o4755)
+                let _ = shell("chown root:wheel \(daemonBinaryPath)")
+                print("[DaemonBootstrap] ✅ 已设置 setuid root (0o4755)")
+            } else {
+                // 没有 root 权限，只能给普通权限，daemon 也会是 mobile
+                chmod(daemonBinaryPath, 0o755)
+                print("[DaemonBootstrap] ⚠️ 当前 UID=mobile，daemon 将无 root 权限，reboot 会失败")
+            }
             print("[DaemonBootstrap] ✅ 二进制已安装: \(daemonBinaryPath)")
         } catch {
             print("[DaemonBootstrap] ❌ 复制二进制失败: \(error)")
@@ -88,6 +100,8 @@ enum DaemonBootstrap {
             <integer>5</integer>
             <key>ProcessType</key>
             <string>Background</string>
+            <key>UserName</key>
+            <string>root</string>
             <key>StandardOutPath</key>
             <string>\(logDir)/trollserver.log</string>
             <key>StandardErrorPath</key>

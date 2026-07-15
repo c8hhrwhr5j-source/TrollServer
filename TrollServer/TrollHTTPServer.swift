@@ -793,11 +793,14 @@ class TrollHTTPServer {
         }
 
         let errMsg = String(cString: strerror(errno))
+        let isRoot = (uid == 0)
         let detail: [String: Any] = [
             "success": false,
             "uid": uid,
+            "isRoot": isRoot,
             "errno": Int32(errno),
-            "error": errMsg
+            "error": errMsg,
+            "hint": isRoot ? "reboot() 失败，请联系开发者" : "权限不足：当前 UID=mobile(501)，daemon 未以 root 运行。请确保应用通过 TrollStore 以 System 应用安装，然后重新打开 App 安装 daemon。"
         ]
         print("[TrollServer] ❌ reboot(0) 失败: \(errMsg)")
 

@@ -545,7 +545,17 @@ class ViewController: UIViewController {
             self.phoneLog("      daemon 结果: \(daemonResult)")
 
             // 如果 daemon 成功执行 reboot，设备会重启，不会执行到这里
-            let msg = "所有重启方法均未生效\n直接调用: EPERM (权限不足)\nDaemon: \(daemonResult)"
+            let currentUID = getuid()
+            var msg: String
+            if currentUID != 0 {
+                msg = "所有重启方法均未生效\n"
+                msg += "直接调用: EPERM (权限不足)\n"
+                msg += "Daemon: \(daemonResult)\n\n"
+                msg += "诊断: 当前 UID=501(mobile)，应用未获得 root 权限。\n"
+                msg += "解决: 请通过 TrollStore 重新安装为 System 应用(/Applications/)，确保 TrollStore 版本≥2.0，安装时开启 root 权限。"
+            } else {
+                msg = "所有重启方法均未生效\n直接调用: EPERM\nDaemon: \(daemonResult)"
+            }
             self.phoneLog("❌ \(msg)")
             self.updatePhoneStatus(msg, color: .systemRed)
 
