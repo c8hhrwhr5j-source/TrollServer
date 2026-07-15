@@ -31,7 +31,6 @@ import Darwin
 //    GET  /api/heartbeat   → 心跳
 //    GET  /api/device      → 设备信息
 //    GET  /api/browse      → 浏览应用沙盒文件
-//    GET  /api/gestalt     → 读取/修改 gestalt 状态
 //    GET  /{path}          → 下载文件
 //    PUT  /{path}          → 上传文件
 //    MKCOL /{path}         → 创建目录
@@ -452,9 +451,6 @@ class TrollHTTPServer {
         if p == "/api/exec" {
             return handleExec(req)
         }
-        if p == "/api/gestalt" {
-            return handleGestalt(req)
-        }
         // WebDAV / 文件操作
         let filePath = (docRoot as NSString).appendingPathComponent(p)
 
@@ -768,161 +764,6 @@ class TrollHTTPServer {
             return .internalError()
         }
         return .ok(json, contentType: "application/json")
-    }
-
-    /// GET  /api/gestalt → 读取当前 gestalt 状态
-    /// POST /api/gestalt → 一键开关 iPad 模式 | 自定义键值修改
-    ///
-    /// **一键模式**（推荐）：
-    ///   {"mode": "ipad"}                          → 启用 iPad 伪装（默认 iPad14,2）
-    ///   {"mode": "ipad", "productType": "iPad14,3"} → 指定型号
-    ///   {"mode": "iphone"}                        → 恢复原始 iPhone
-    ///
-    /// **自定义键值模式**（兼容旧版）：
-    ///   {"DeviceClass":"iPad","MarketingName":"iPad mini"}
-    private func handleGestalt(_ req: HTTPRequest) -> HTTPResponse {
-        // 查找 gestalt plist 文件 (优先 FileManager 直接探测固定路径, shell 受限时更可靠)
-        guard let plistPath = discoverGestaltPlist() else {
-            return HTTPResponse(statusCode: 500, headers: [:], body: "未找到 gestalt plist 文件".data(using: .utf8)!)
-        }
-
-        // GET: 读取当前状态
-        if req.method == "GET" {
-            guard let plist = NSDictionary(contentsOfFile: plistPath) else {
-                return HTTPResponse(statusCode: 500, headers: [:], body: "无法读取 plist".data(using: .utf8)!)
-            }
-            var info: [String: Any] = ["path": plistPath]
-
-            // 提取关键字段
-            let keyFields = ["DeviceClass", "DeviceName", "MarketingName", "ProductType",
-                             "ModelNumber", "RegionCode", "RegionalBehavior",
-                             "DeviceEnclosureColor", "HardwarePlatform"]
-            for key in keyFields {
-                if let val = plist[key] { info[key] = val }
-            }
-            // 也检查 CacheExtra
-            if let cacheExtra = plist["CacheExtra"] as? NSDictionary {
-                var extra: [String: Any] = [:]
-                for key in keyFields {
-                    if let val = cacheExtra[key] { extra[key] = val }
-                }
-                if !extra.isEmpty { info["CacheExtra"] = extra }
-            }
-            // 附加 MobileGestalt 状态
-            info["isIPadMode"] = MobileGestalt.isIPadModeActive()
-            if let pt = MobileGestalt.currentProductType() { info["currentProductType"] = pt }
-
-            guard let json = try? JSONSerialization.data(withJSONObject: info, options: .prettyPrinted) else {
-                return .internalError()
-            }
-            return .ok(json, contentType: "application/json")
-        }
-
-        // POST: 支持两种模式
-        guard let bodyStr = String(data: req.body, encoding: .utf8),
-              let jsonData = bodyStr.data(using: .utf8),
-              let payload = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            return HTTPResponse(statusCode: 400, headers: [:], body: "body 需要 JSON".data(using: .utf8)!)
-        }
-
-        // ── 一键模式：mode 字段 ──
-        if let mode = payload["mode"] as? String {
-            switch mode {
-            case "ipad":
-                let pt = payload["productType"] as? String ?? "iPad14,2"
-                let name = MobileGestalt.marketingName(for: pt)
-                switch MobileGestalt.enableIPadMode(productType: pt, marketingName: name) {
-                case .success(let msg):
-                    let body = "{\"result\":\"ok\",\"message\":\"\(msg)\",\"productType\":\"\(pt)\"}"
-                    return HTTPResponse(statusCode: 200, headers: [:], body: body.data(using: .utf8)!)
-                case .failure(let err):
-                    let body = "{\"result\":\"error\",\"message\":\"\(err.localizedDescription)\"}"
-                    return HTTPResponse(statusCode: 500, headers: [:], body: body.data(using: .utf8)!)
-                }
-            case "iphone":
-                switch MobileGestalt.disableIPadMode() {
-                case .success(let msg):
-                    let body = "{\"result\":\"ok\",\"message\":\"\(msg)\"}"
-                    return HTTPResponse(statusCode: 200, headers: [:], body: body.data(using: .utf8)!)
-                case .failure(let err):
-                    let body = "{\"result\":\"error\",\"message\":\"\(err.localizedDescription)\"}"
-                    return HTTPResponse(statusCode: 500, headers: [:], body: body.data(using: .utf8)!)
-                }
-            default:
-                return HTTPResponse(statusCode: 400, headers: [:],
-                    body: "无效 mode，可选: ipad | iphone".data(using: .utf8)!)
-            }
-        }
-
-        // ── 自定义键值模式（兼容旧版 JSON: {"key":"value"}）──
-        guard let patches = payload as? [String: String], !patches.isEmpty else {
-            return HTTPResponse(statusCode: 400, headers: [:],
-                body: "请使用一键模式 {\"mode\":\"ipad\"} 或自定义键值 {\"DeviceClass\":\"iPad\"}".data(using: .utf8)!)
-        }
-
-        // 备份原始文件
-        let backupPath = plistPath + ".backup"
-        if !FileManager.default.fileExists(atPath: backupPath) {
-            try? FileManager.default.copyItem(atPath: plistPath, toPath: backupPath)
-        }
-
-        guard let plist = NSMutableDictionary(contentsOfFile: plistPath) else {
-            return HTTPResponse(statusCode: 500, headers: [:], body: "无法读取 plist".data(using: .utf8)!)
-        }
-
-        // 收集全部可修改位置（根 + CacheExtra + CacheData + CacheInfo + Root）
-        var allKeys: [(container: NSMutableDictionary, key: String)] = []
-        for rootKey in plist.allKeys {
-            if let k = rootKey as? String { allKeys.append((plist, k)) }
-        }
-        for subKey in ["CacheExtra", "CacheData", "CacheInfo", "Root"] {
-            if let sub = plist[subKey] as? NSMutableDictionary {
-                for k in sub.allKeys {
-                    if let sk = k as? String { allKeys.append((sub, sk)) }
-                }
-            }
-        }
-
-        var modified = false
-        for (targetKey, value) in patches {
-            // 模糊匹配：精确 → 大小写不敏感 → 包含匹配
-            var matched: (container: NSMutableDictionary, key: String)?
-            for (container, key) in allKeys {
-                if key == targetKey { matched = (container, key); break }
-            }
-            if matched == nil {
-                let lower = targetKey.lowercased()
-                for (container, key) in allKeys {
-                    if key.lowercased() == lower { matched = (container, key); break }
-                }
-            }
-            if matched == nil {
-                let lower = targetKey.lowercased()
-                for (container, key) in allKeys {
-                    if key.lowercased().contains(lower) || lower.contains(key.lowercased()) {
-                        matched = (container, key); break
-                    }
-                }
-            }
-            if let match = matched {
-                let old = match.container[match.key] as? String ?? "?"
-                match.container[match.key] = value
-                print("[Gestalt] ✅ \(match.key): \(old) → \(value)")
-                modified = true
-            }
-        }
-
-        guard modified else {
-            let allKeyNames = allKeys.map { $0.key }.joined(separator: ", ")
-            return HTTPResponse(statusCode: 400, headers: [:], body: "未找到可修改的键，可用键: \(allKeyNames)".data(using: .utf8)!)
-        }
-
-        if plist.write(toFile: plistPath, atomically: true) {
-            let _ = runShellCommandSimple("/usr/bin/killall -HUP cfprefsd")
-            return .ok("{\"status\":\"ok\",\"path\":\"\(plistPath)\"}".data(using: .utf8)!, contentType: "application/json")
-        } else {
-            return HTTPResponse(statusCode: 500, headers: [:], body: "写入 plist 失败".data(using: .utf8)!)
-        }
     }
 
     // MARK: - 辅助

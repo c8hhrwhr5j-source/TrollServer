@@ -43,7 +43,7 @@
         <string>/</string>
     </array>
 
-    <!-- 特定系统路径（MobileGestalt 相关） -->
+    <!-- 特定系统路径只读 -->
     <key>com.apple.security.exception.files.absolute-path.read-only</key>
     <array>
         <string>/var/containers/Shared/SystemGroup/</string>

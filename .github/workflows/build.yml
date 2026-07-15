@@ -1,4 +1,4 @@
-﻿name: TrollServer iPad Spoof dylib + TrollFools CI Build
+﻿name: TrollServer CI Build
 
 on:
   push:
@@ -37,23 +37,6 @@ jobs:
             fi
           fi
           true
-      - name: Build libiPadSpoof.dylib + test dylibs
-        run: |
-          echo "Current directory: $(pwd)"
-          ls -la
-          if [ -d "spoof" ]; then
-            cd spoof
-          else
-            echo "ERROR: spoof directory not found"
-            exit 1
-          fi
-          chmod +x build_spoof.sh build_ladder.sh build_testboot.sh build_purec.sh
-          echo "=== 编译 libiPadSpoof (3变体: 完整/无UI/弱链UI) ==="
-          ./build_spoof.sh
-          echo "=== 编译渐进式诊断阶梯 ==="
-          ./build_ladder.sh
-          echo "=== 所有产物 ==="
-          ls -la *.dylib
 
       - name: Build Release IPA
         run: |
@@ -72,7 +55,6 @@ jobs:
           else
             echo "WARNING: No build.sh or xcodeproj found, creating minimal IPA"
             mkdir -p Payload/TrollServer.app
-            cp spoof/libiPadSpoof.dylib Payload/TrollServer.app/; true
             cp 123.png Payload/TrollServer.app/Icon.png; true
             zip -r TrollServer.ipa Payload
           fi
@@ -83,7 +65,6 @@ jobs:
           name: TrollServer-artifacts
           path: |
             TrollServer.ipa
-            spoof/*.dylib
 
       - name: Create Release
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
@@ -94,17 +75,7 @@ jobs:
           body: |
             Auto build artifacts:
             - TrollServer.ipa (TrollStore install package)
-            - libiPadSpoof.dylib (完整版: Foundation + UIKit 强链)
-            - libiPadSpoof_noUI.dylib (诊断版: 仅 Foundation，无UIKit)
-            - libiPadSpoof_weakUI.dylib (诊断版: Foundation + UIKit 弱链)
-            - libTestBoot.dylib (Foundation 探针)
-            - libPureC_arm64.dylib (纯C arm64 探针)
-            - libPureC_arm64e.dylib (纯C arm64e 探针)
-
-            诊断步骤: 先测 noUI → 再测 weakUI → 最后测完整版
-            日志: Filza 搜索 libiPadSpoof_boot.log (在微信沙箱 tmp 目录下)
           files: |
             TrollServer.ipa
-            spoof/*.dylib
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

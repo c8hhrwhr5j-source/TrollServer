@@ -66,8 +66,6 @@ run_validate() {
         "BootstrapServices.swift"
         "UDPBroadcaster.swift"
         "DaemonBootstrap.swift"
-        "SpoofConfig.swift"
-        "MobileGestalt.swift"
     )
     for f in "${required_files[@]}"; do
         if [ -f "$SRC_DIR/$f" ]; then
@@ -207,8 +205,6 @@ if [ "$BUILD_TARGET" = "daemon" ] || [ "$BUILD_TARGET" = "all" ]; then
         "$SRC_DIR/ServiceMonitor.swift"
         "$SRC_DIR/BootstrapServices.swift"
         "$SRC_DIR/UDPBroadcaster.swift"
-        "$SRC_DIR/SpoofConfig.swift"
-        "$SRC_DIR/MobileGestalt.swift"
     )
 
     SWIFT_FLAGS="-D DAEMON_MODE -sdk $SDK_PATH -target ${ARCH}-apple-ios${MIN_VERSION} -O -whole-module-optimization"
@@ -401,10 +397,6 @@ SWIFT_FILES=(
     "$SRC_DIR/BootstrapServices.swift"
     "$SRC_DIR/UDPBroadcaster.swift"
     "$SRC_DIR/DaemonBootstrap.swift"
-    "$SRC_DIR/SpoofConfig.swift"
-    "$SRC_DIR/SpoofSettingsViewController.swift"
-    "$SRC_DIR/MobileGestalt.swift"
-    "$SRC_DIR/DylibInjector.swift"
 )
 
 # 创建临时 Info.plist 复制
@@ -441,27 +433,6 @@ chmod +x "$APP_DIR/$APP_NAME"
 
 cp "$SRC_DIR/Info.plist" "$APP_DIR/Info.plist"
 cp "$SRC_DIR/TrollServer.entitlements" "$APP_DIR/"
-
-# 把 dylib 打包进 App 的 Resources（运行时可读取并注入到微信/QQ）
-DYLIB_SRC="$SCRIPT_DIR/spoof/libiPadSpoof.dylib"
-FOUND_DYLIB=false
-for tryPath in \
-    "$DYLIB_SRC" \
-    "$PROJECT_DIR/spoof/libiPadSpoof.dylib" \
-    "$BUILD_DIR/libiPadSpoof.dylib" \
-    "$SCRIPT_DIR/libiPadSpoof.dylib" \
-    ; do
-    if [ -f "$tryPath" ]; then
-        cp "$tryPath" "$APP_DIR/libiPadSpoof.dylib"
-        echo "  ✅ libiPadSpoof.dylib 已打包到 .app bundle (from $tryPath)"
-        FOUND_DYLIB=true
-        break
-    fi
-done
-if [ "$FOUND_DYLIB" = false ]; then
-    echo "  ⚠️  libiPadSpoof.dylib 未找到，注入功能将不可用"
-    echo "     搜索路径: $DYLIB_SRC"
-fi
 
 # 复制 AppIcon — 必须放到 .app 根目录且命名匹配 Info.plist 的 CFBundleIconFiles
 # CFBundleIconFiles 指定 "AppIcon60x60" → iOS 查找 AppIcon60x60@2x.png / AppIcon60x60@3x.png

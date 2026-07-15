@@ -7,59 +7,6 @@ import Darwin
 //  (popen / WIFEXITED / WEXITSTATUS 在 iOS SDK 中被 __swift_unavailable)
 // ============================================================
 
-/// 定位 com.apple.MobileGestalt.plist
-/// 多级探测策略（TrollStore 环境下 FileManager 优先于 shell）:
-///   1. 固定已知路径
-///   2. 枚举 SystemGroup 下所有子目录（适配 UUID 命名的容器）
-///   3. shell find 兜底（部分设备 sh 不可用时跳过）
-func discoverGestaltPlist() -> String? {
-    let fm = FileManager.default
-    let basePath = "/var/containers/Shared/SystemGroup"
-    let leafPath = "Library/Caches/com.apple.MobileGestalt.plist"
-
-    // ── 策略 1: 固定已知路径 ──
-    let candidates = [
-        "\(basePath)/com.apple.mobilegestaltcache/\(leafPath)",
-        "\(basePath)/systemgroup.com.apple.mobilegestaltcache/\(leafPath)",
-        "\(basePath)/com.apple.MobileGestalt.plist",
-        "/var/mobile/Library/Caches/com.apple.MobileGestalt.plist",
-    ]
-    for p in candidates where fm.fileExists(atPath: p) {
-        print("[Gestalt] ✅ 命中固定路径: \(p)")
-        return p
-    }
-
-    // ── 策略 2: 枚举 SystemGroup 子目录（处理 UUID 命名的容器） ──
-    print("[Gestalt] 固定路径未命中，开始枚举 SystemGroup 子目录...")
-    if let subDirs = try? fm.contentsOfDirectory(atPath: basePath) {
-        for sub in subDirs {
-            let p = "\(basePath)/\(sub)/\(leafPath)"
-            if fm.fileExists(atPath: p) {
-                print("[Gestalt] ✅ 枚举命中: \(p)")
-                return p
-            }
-        }
-        print("[Gestalt] SystemGroup 下有 \(subDirs.count) 个子目录，均未匹配")
-    } else {
-        print("[Gestalt] 无法列出 SystemGroup 子目录（权限不足？）")
-    }
-
-    // ── 策略 3: shell find 兜底 ──
-    let env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-    let r = runShellCommand(
-        "find \(basePath) -name 'com.apple.MobileGestalt.plist' 2>/dev/null | head -1",
-        environment: env
-    )
-    let p = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !p.isEmpty, fm.fileExists(atPath: p) {
-        print("[Gestalt] ✅ find 命中: \(p)")
-        return p
-    }
-
-    print("[Gestalt] ❌ 所有策略均失败 (shell 退出码=\(r.exitCode), 输出=\"\(r.stdout)\")")
-    return nil
-}
-
 func runShellCommand(
     _ command: String,
     environment: [String: String]? = nil
