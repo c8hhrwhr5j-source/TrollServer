@@ -32,7 +32,6 @@ import Darwin
 //    GET  /api/device      → 设备信息
 //    GET  /api/browse      → 浏览应用沙盒文件
 //    GET  /api/gestalt     → 读取/修改 gestalt 状态
-//    GET  /api/spoof       → 设备伪装配置（供 libiPadSpoof.dylib）
 //    GET  /{path}          → 下载文件
 //    PUT  /{path}          → 上传文件
 //    MKCOL /{path}         → 创建目录
@@ -456,9 +455,6 @@ class TrollHTTPServer {
         if p == "/api/gestalt" {
             return handleGestalt(req)
         }
-        if p == "/api/spoof" {
-            return .ok(SpoofConfig.jsonData(), contentType: "application/json")
-        }
         // WebDAV / 文件操作
         let filePath = (docRoot as NSString).appendingPathComponent(p)
 
@@ -547,10 +543,6 @@ class TrollHTTPServer {
             "keepalive": [
                 "silentAudio": SilentAudioPlayer.shared.isPlaying,
                 "monitor": ServiceMonitor.shared.statusDetail,
-            ],
-            "spoof": [
-                "enabled": SpoofConfig.isEnabled,
-                "productType": SpoofConfig.productType,
             ],
         ]
         guard let json = try? JSONSerialization.data(withJSONObject: info) else {
