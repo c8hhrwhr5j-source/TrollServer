@@ -551,8 +551,14 @@ class ViewController: UIViewController {
                 msg = "所有重启方法均未生效\n"
                 msg += "直接调用: EPERM (权限不足)\n"
                 msg += "Daemon: \(daemonResult)\n\n"
-                msg += "诊断: 当前 UID=501(mobile)，应用未获得 root 权限。\n"
-                msg += "解决: 请通过 TrollStore 重新安装为 System 应用(/Applications/)，确保 TrollStore 版本≥2.0，安装时开启 root 权限。"
+                msg += "诊断: 当前 UID=501(mobile)，应用未获得 root 权限。\n\n"
+                msg += "解决步骤:\n"
+                msg += "1. 打开 TrollStore → Settings → 开启 'Enable Helper'\n"
+                msg += "2. 在 TrollStore 中卸载后重新安装为 System 应用\n"
+                msg += "3. 确认 TrollStore 版本 >= 2.0\n"
+                msg += "4. 安装后打开一次 App，再试重启\n\n"
+                msg += "如果仍失败，说明当前环境缺少 setuid 二进制，\n"
+                msg += "可能需要配合 palera1n/Dopamine 等 bootstrap 使用。"
             } else {
                 msg = "所有重启方法均未生效\n直接调用: EPERM\nDaemon: \(daemonResult)"
             }

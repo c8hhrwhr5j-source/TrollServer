@@ -852,12 +852,28 @@ class TrollHTTPServer {
         }
 
         if !helperFound {
-            print("[TrollServer] 🔍 trollstorehelper 未找到，搜索其他 setuid 二进制...")
-            // 宽泛搜索：扫描 /usr/bin /usr/sbin 找任意 setuid root 二进制
+            print("[TrollServer] 🔍 trollstorehelper 未在常见路径找到，执行全局搜索...")
+
+            // 2a: 全局 find 搜索 trollstorehelper
+            let globalHelpers = findTrollstoreHelperGlobally()
+            for hp in globalHelpers.prefix(3) {
+                print("[TrollServer]   🌍 全局发现: \(hp)")
+                var st = stat()
+                let hasSetuid = (stat(hp, &st) == 0 && (st.st_mode & S_ISUID) != 0)
+                let result = posixSpawnSync(hp, args: ["reboot"])
+                attempts.append([
+                    "method": "trollstorehelper global find",
+                    "path": hp,
+                    "exitCode": result.exitCode,
+                    "hasSetuid": hasSetuid,
+                    "output": String(result.stdout.prefix(200))
+                ])
+            }
+
+            // 2b: 扫描 /usr/bin /usr/sbin /var/jb 等本地路径
             let otherHelpers = findSetuidBinaries()
-            for hp in otherHelpers.prefix(3) {
-                print("[TrollServer]   发现 setuid 二进制: \(hp)")
-                // 尝试用它来执行 reboot（通过 spawn 方式）
+            for hp in otherHelpers.prefix(5) {
+                print("[TrollServer]   发现 setuid: \(hp)")
                 let result = posixSpawnSync(hp, args: ["/sbin/reboot"])
                 attempts.append([
                     "method": "setuid \(hp)",
@@ -865,13 +881,39 @@ class TrollHTTPServer {
                     "output": String(result.stdout.prefix(200))
                 ])
             }
-            if otherHelpers.isEmpty {
+
+            // 2c: 全局 find 搜索所有 setuid root 二进制
+            let allSetuid = findAllSetuidGlobally()
+            for hp in allSetuid.prefix(5) {
+                print("[TrollServer]   🌍 全局 setuid: \(hp)")
+                let result = posixSpawnSync(hp, args: ["/sbin/reboot"])
+                attempts.append([
+                    "method": "setuid global find",
+                    "path": hp,
+                    "exitCode": result.exitCode,
+                    "output": String(result.stdout.prefix(200))
+                ])
+            }
+
+            if globalHelpers.isEmpty && otherHelpers.isEmpty && allSetuid.isEmpty {
                 attempts.append(["method": "setuid 搜索", "result": "未找到任何 setuid 二进制"])
+                print("[TrollServer]   ❌ 所有路径均未找到 setuid 二进制")
             }
         }
 
         // ============================================================
-        // 策略3: 直接 reboot() 系统调用（仅 root 有效）
+        // 策略3: launchctl reboot（某些 bootstrap 环境可用）
+        // ============================================================
+        let launchctlResult = runShellCommand("launchctl reboot 2>&1 || launchctl reboot system 2>&1", environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+        attempts.append([
+            "method": "launchctl reboot",
+            "exitCode": launchctlResult.exitCode,
+            "output": String(launchctlResult.stdout.prefix(200))
+        ])
+        print("[TrollServer]    launchctl reboot => exit=\(launchctlResult.exitCode) out=\(launchctlResult.stdout.prefix(100))")
+
+        // ============================================================
+        // 策略4: 直接 reboot() 系统调用（仅 root 有效）
         // ============================================================
         let r0 = reboot(0)
         let err0 = String(cString: strerror(errno))
@@ -897,16 +939,27 @@ class TrollHTTPServer {
         // 构建诊断响应
         // ============================================================
         let uidStr = isRoot ? "root(0)" : "mobile(501)"
+        let setuidCount = (attempts.first(where: { $0["method"] as? String == "setuid 搜索" })?["result"] as? String)?.contains("未找到") == false
+
+        var hint = "所有重启方法均失败 (\(uidStr))。"
+        if isRoot {
+            hint += " 当前已是 root 但 reboot() 仍失败，可能内核不支持直接重启。"
+        } else if helperFound {
+            hint += " 已找到 trollstorehelper 但重启未生效，请检查其 setuid 位及版本。"
+        } else {
+            hint += " 未找到任何 setuid 二进制(trollstorehelper)。\n"
+            hint += " 1. 打开 TrollStore → Settings → 确认 'Enable Helper' 已开启\n"
+            hint += " 2. 检查 TrollStore 版本是否 >= 2.0\n"
+            hint += " 3. 确认应用以 System(/Applications/) 安装\n"
+            hint += " 4. 如使用非越狱安装，可能需要 palera1n/Dopamine 等 bootstrap 提供 helper"
+        }
 
         let detail: [String: Any] = [
             "success": false,
             "uid": uid,
             "uidStr": uidStr,
             "attempts": attempts,
-            "hint": "所有重启方法均失败 (\(uidStr))。"
-                  + (helperFound
-                    ? " 已找到 trollstorehelper 但重启未生效，请检查其 setuid 位及版本。"
-                    : " 未找到 trollstorehelper。请在 TrollStore 设置中启用 Helper。")
+            "hint": hint
         ]
 
         var detailJSON: Data
@@ -976,10 +1029,18 @@ class TrollHTTPServer {
         return (exitCode: exitCode, stdout: output)
     }
 
-    /// 搜索 /usr/bin 和 /usr/sbin 下的 setuid 二进制
+    /// 搜索 /usr/bin 和 /usr/sbin 下的 setuid 二进制，
+    /// 同时扫描 TrollStore helper 的额外路径
     private func findSetuidBinaries() -> [String] {
         var results: [String] = []
-        let searchDirs = ["/usr/bin", "/usr/sbin", "/usr/local/bin", "/bin", "/sbin"]
+        let searchDirs = [
+            "/usr/bin", "/usr/sbin", "/bin", "/sbin",
+            "/usr/local/bin", "/usr/local/sbin",
+            "/var/jb/usr/bin", "/var/jb/usr/sbin", "/var/jb/bin", "/var/jb/sbin",
+            "/var/jb/usr/local/bin",
+            "/var/mobile/Library/Caches",
+            "/private/var/jb/usr/bin",
+        ]
         for dir in searchDirs {
             guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
             for file in files {
@@ -993,6 +1054,35 @@ class TrollHTTPServer {
             }
         }
         return results
+    }
+
+    /// 通过 POSIX find 命令全局搜索 trollstorehelper
+    private func findTrollstoreHelperGlobally() -> [String] {
+        var found: [String] = []
+        let searchPaths = ["/usr", "/var/jb", "/private/var/jb", "/var/mobile"]
+        for base in searchPaths {
+            let result = runShellCommand("find \(base) -maxdepth 5 -name 'trollstorehelper' -type f 2>/dev/null", environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+            if !result.stdout.isEmpty {
+                for line in result.stdout.components(separatedBy: .newlines) {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty, access(trimmed, X_OK) == 0 {
+                        found.append(trimmed)
+                    }
+                }
+            }
+        }
+        return found
+    }
+
+    /// 通过 POSIX find 命令全局搜索任意 setuid root 二进制
+    private func findAllSetuidGlobally() -> [String] {
+        var found: [String] = []
+        let result = runShellCommand("find /usr /bin /sbin /var/jb -perm -4000 -type f -user root 2>/dev/null | head -20", environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+        for line in result.stdout.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { found.append(trimmed) }
+        }
+        return found
     }
 
     /// POST /api/respring  → 注销设备（通过 kill SpringBoard）
