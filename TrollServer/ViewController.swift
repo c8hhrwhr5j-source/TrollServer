@@ -186,12 +186,30 @@ class ViewController: UIViewController {
         phoneRow.distribution = .fillEqually
         phoneRow.translatesAutoresizingMaskIntoConstraints = false
 
+        // 手机控制状态反馈标签
+        let phoneStatusLabel = UILabel()
+        phoneStatusLabel.text = ""
+        phoneStatusLabel.font = UIFont.systemFont(ofSize: 12)
+        phoneStatusLabel.textColor = .secondaryLabel
+        phoneStatusLabel.textAlignment = .center
+        phoneStatusLabel.numberOfLines = 2
+        phoneStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        phoneStatusLabel.tag = 9001  // 用于 viewWithTag 查找
+
+        // 查看日志小按钮
+        let viewLogBtn = UIButton(type: .system)
+        viewLogBtn.setTitle("📋 查看执行日志", for: .normal)
+        viewLogBtn.titleLabel?.font = UIFont.systemFont(ofSize: 11)
+        viewLogBtn.setTitleColor(.systemGray, for: .normal)
+        viewLogBtn.addTarget(self, action: #selector(viewPhoneLog), for: .touchUpInside)
+        viewLogBtn.translatesAutoresizingMaskIntoConstraints = false
+
         let phoneCard = UIView()
         phoneCard.backgroundColor = .secondarySystemGroupedBackground
         phoneCard.layer.cornerRadius = 12
         phoneCard.translatesAutoresizingMaskIntoConstraints = false
 
-        let phoneStack = UIStackView(arrangedSubviews: [phoneRow])
+        let phoneStack = UIStackView(arrangedSubviews: [phoneRow, phoneStatusLabel, viewLogBtn])
         phoneStack.axis = .vertical
         phoneStack.spacing = 10
         phoneStack.translatesAutoresizingMaskIntoConstraints = false
@@ -409,159 +427,236 @@ class ViewController: UIViewController {
 
     // ===================== 手机控制操作 =====================
 
-    // MARK: - 重启手机（多级回退 + 直接系统调用）
+    /// 日志文件路径
+    private static let phoneLogPath = "/var/mobile/Library/Logs/trollserver_phone.log"
+
+    /// 写日志到文件 + print
+    private func phoneLog(_ msg: String) {
+        let line = "[\(DateFormatter.phoneLogFormatter.string(from: Date()))] \(msg)"
+        print(line)
+        // 追加写入文件
+        if let data = (line + "\n").data(using: .utf8) {
+            if let fh = FileHandle(forWritingAtPath: Self.phoneLogPath) {
+                fh.seekToEndOfFile()
+                fh.write(data)
+                fh.closeFile()
+            } else {
+                // 首次创建
+                try? (line + "\n").write(toFile: Self.phoneLogPath, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+
+    /// 更新手机控制状态标签
+    private func updatePhoneStatus(_ text: String, color: UIColor = .secondaryLabel) {
+        DispatchQueue.main.async { [weak self] in
+            if let label = self?.view.viewWithTag(9001) as? UILabel {
+                label.text = text
+                label.textColor = color
+            }
+        }
+    }
+
+    /// 查看手机控制日志
+    @objc private func viewPhoneLog() {
+        let logContent = (try? String(contentsOfFile: Self.phoneLogPath, encoding: .utf8))
+            ?? "暂无日志"
+
+        let alert = UIAlertController(
+            title: "📋 手机控制执行日志",
+            message: logContent,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "关闭", style: .default))
+        alert.addAction(UIAlertAction(title: "清空日志", style: .destructive) { _ in
+            try? "".write(toFile: Self.phoneLogPath, atomically: true, encoding: .utf8)
+            self.updatePhoneStatus("日志已清空", color: .systemGray)
+        })
+        present(alert, animated: true)
+    }
+
+    // MARK: - 重启手机
 
     @objc private func rebootDevice() {
         let alert = UIAlertController(
             title: "⚠️ 重启手机",
-            message: "确定要重启手机吗？重启后设备将断开连接。",
+            message: "确定要重启手机吗？\n重启后设备将断开连接。",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "确认重启", style: .destructive) { [weak self] _ in
-            self?.performReboot()
+            guard let self = self else { return }
+            self.updatePhoneStatus("⏳ 正在重启...", color: .systemOrange)
+            self.performReboot()
         })
         present(alert, animated: true)
     }
 
     private func performReboot() {
-        print("[PhoneControl] ╔══════════════════════════════╗")
-        print("[PhoneControl] ║  🔄 执行「重启手机」         ║")
-        print("[PhoneControl] ╚══════════════════════════════╝")
+        phoneLog("========== 开始重启手机 ==========")
 
-        // 0. 先同步文件系统
+        // 先同步磁盘
         sync()
-        print("[PhoneControl] [prep] ✅ sync() 完成")
+        phoneLog("✅ sync() 完成")
 
-        // 状态反馈：更新 scriptStatusLabel 提示用户
+        // 禁用按钮
         DispatchQueue.main.async { [weak self] in
-            self?.scriptStatusLabel.text = "⏳ 正在重启手机..."
-            self?.scriptStatusLabel.textColor = .systemOrange
+            self?.rebootBtn.isEnabled = false
+            self?.respringBtn.isEnabled = false
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            // 方法1: 直接 reboot() 系统调用 (内核级，最可靠)
-            print("[PhoneControl] [1/4] reboot(0) 系统调用...")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+
+            // 方法1: 直接 reboot() 系统调用
+            self.phoneLog("[1/3] reboot(0) 系统调用...")
             var ret = reboot(0)
-            print("[PhoneControl]       reboot(0) => \(ret) | errno=\(errno): \(String(cString: strerror(errno)))")
+            self.phoneLog("      reboot(0) => ret=\(ret) errno=\(errno): \(String(cString: strerror(errno)))")
 
-            // 方法2: 尝试 reboot(RB_AUTOBOOT) 即 reboot(0x400)
+            // 方法2: reboot(0x400)
             if ret != 0 {
-                print("[PhoneControl] [2/4] reboot(0x400) 系统调用...")
+                self.phoneLog("[2/3] reboot(0x400) 系统调用...")
                 ret = reboot(0x400)
-                print("[PhoneControl]       reboot(0x400) => \(ret) | errno=\(errno): \(String(cString: strerror(errno)))")
+                self.phoneLog("      reboot(0x400) => ret=\(ret) errno=\(errno): \(String(cString: strerror(errno)))")
             }
 
-            // 方法3: /bin/launchctl reboot (全路径避免 PATH 问题)
-            print("[PhoneControl] [3/4] /bin/launchctl reboot...")
-            if self.commandExists("/bin/launchctl") {
-                let r = runShellCommand("/bin/launchctl reboot 2>&1")
-                print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
-            } else {
-                print("[PhoneControl]       ⚠️ /bin/launchctl 不存在")
-            }
+            // 方法3: launchctl reboot
+            self.phoneLog("[3/3] /bin/launchctl reboot...")
+            let r = self.phoneShell("/bin/launchctl reboot")
+            self.phoneLog("      launchctl reboot => exitCode=\(r)")
 
-            // 方法4: launchctl reboot userspace (用户空间重启，兼容旧版 iOS)
-            print("[PhoneControl] [4/4] /bin/launchctl reboot userspace...")
-            if self.commandExists("/bin/launchctl") {
-                let r = runShellCommand("/bin/launchctl reboot userspace 2>&1")
-                print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
-            }
+            // 如果代码执行到这里说明重启未生效
+            let msg = "所有重启方法均未生效(exitCode=\(r))，请查看日志"
+            self.phoneLog("❌ \(msg)")
+            self.updatePhoneStatus(msg, color: .systemRed)
 
-            print("[PhoneControl] ⚠️ 所有方法均已尝试，若未重启请检查日志")
             DispatchQueue.main.async { [weak self] in
-                self?.scriptStatusLabel.text = "⚠️ 重启指令已发送，若 3 秒后未重启请检查日志"
-                self?.scriptStatusLabel.textColor = .systemYellow
+                self?.rebootBtn.isEnabled = true
+                self?.respringBtn.isEnabled = true
+                self?.showPhoneResultAlert("重启失败", msg)
             }
         }
     }
 
-    // MARK: - 注销手机（Respring，多级回退）
+    // MARK: - 注销手机
 
     @objc private func respringDevice() {
         let alert = UIAlertController(
             title: "⚠️ 注销手机",
-            message: "确定要注销（Respring）手机吗？SpringBoard 将重新启动。",
+            message: "确定要注销（Respring）手机吗？\nSpringBoard 将重新启动。",
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "确认注销", style: .destructive) { [weak self] _ in
-            self?.performRespring()
+            guard let self = self else { return }
+            self.updatePhoneStatus("⏳ 正在注销...", color: .systemOrange)
+            self.performRespring()
         })
         present(alert, animated: true)
     }
 
     private func performRespring() {
-        print("[PhoneControl] ╔══════════════════════════════╗")
-        print("[PhoneControl] ║  🔄 执行「注销手机」         ║")
-        print("[PhoneControl] ╚══════════════════════════════╝")
+        phoneLog("========== 开始注销手机 (Respring) ==========")
 
         DispatchQueue.main.async { [weak self] in
-            self?.scriptStatusLabel.text = "⏳ 正在注销手机..."
-            self?.scriptStatusLabel.textColor = .systemOrange
+            self?.rebootBtn.isEnabled = false
+            self?.respringBtn.isEnabled = false
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
-            // 方法1: killall -9 SpringBoard (直接可靠)
-            print("[PhoneControl] [1/5] killall -9 SpringBoard...")
-            var r = runShellCommand("killall -9 SpringBoard 2>&1")
-            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
 
-            // 方法2: 通过 ps 获取 SpringBoard PID 直接 kill (更精确)
-            print("[PhoneControl] [2/5] ps + grep 查找 SpringBoard PID...")
-            if let pid = self.getPID(of: "SpringBoard") {
-                print("[PhoneControl]       找到 PID=\(pid)，发送 SIGKILL...")
+            // 方法1: 通过 ps 获取 SpringBoard PID，直接 kill(SIGKILL)
+            self.phoneLog("[1/4] ps 查找 SpringBoard PID...")
+            if let pid = self.getSpringBoardPID() {
+                self.phoneLog("      找到 SpringBoard PID=\(pid)，发送 SIGKILL...")
                 let ret = kill(pid, SIGKILL)
-                print("[PhoneControl]       kill(\(pid),SIGKILL)=>\(ret) errno=\(errno)")
-            } else {
-                // 备用方式: pgrep (部分系统可用)
-                let pgR = runShellCommand("pgrep -x SpringBoard 2>/dev/null")
-                if let pid2 = pid_t(pgR.stdout.trimmingCharacters(in: .whitespacesAndNewlines)), pid2 > 0 {
-                    print("[PhoneControl]       (pgrep) 找到 PID=\(pid2)，发送 SIGKILL...")
-                    kill(pid2, SIGKILL)
-                } else {
-                    print("[PhoneControl]       ⚠️ 未找到 SpringBoard 进程")
+                self.phoneLog("      kill(\(pid), SIGKILL) => ret=\(ret) errno=\(errno)")
+                if ret == 0 {
+                    self.phoneLog("✅ SIGKILL 已成功发送给 SpringBoard")
+                    return  // 成功，SpringBoard 收到信号后系统会 respring
                 }
+            } else {
+                self.phoneLog("      ⚠️ ps 方式未找到 SpringBoard")
             }
 
-            // 方法3: launchctl kickstart backboardd (优雅重启)
-            print("[PhoneControl] [3/5] /bin/launchctl kickstart backboardd...")
-            r = runShellCommand("/bin/launchctl kickstart -k system/com.apple.backboardd 2>&1")
-            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+            // 方法2: killall -9 SpringBoard
+            self.phoneLog("[2/4] killall -9 SpringBoard...")
+            var r = self.phoneShell("killall -9 SpringBoard")
+            self.phoneLog("      killall SpringBoard => exitCode=\(r)")
 
-            // 方法4: killall -9 backboardd (备选)
-            print("[PhoneControl] [4/5] killall -9 backboardd...")
-            r = runShellCommand("killall -9 backboardd 2>&1")
-            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+            // 方法3: killall backboardd
+            self.phoneLog("[3/4] killall -9 backboardd...")
+            r = self.phoneShell("killall -9 backboardd")
+            self.phoneLog("      killall backboardd => exitCode=\(r)")
 
-            // 方法5: sbreload (部分越狱设备可用)
-            print("[PhoneControl] [5/5] sbreload...")
-            r = runShellCommand("sbreload 2>&1")
-            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+            // 方法4: launchctl kickstart
+            self.phoneLog("[4/4] launchctl kickstart backboardd...")
+            r = self.phoneShell("/bin/launchctl kickstart -k system/com.apple.backboardd")
+            self.phoneLog("      kickstart backboardd => exitCode=\(r)")
 
-            print("[PhoneControl] ⚠️ 所有方法均已尝试")
+            let msg = "所有注销方法均已尝试，请查看日志"
+            self.phoneLog("❌ \(msg)")
+            self.updatePhoneStatus(msg, color: .systemRed)
+
             DispatchQueue.main.async { [weak self] in
-                self?.scriptStatusLabel.text = "⚠️ 注销指令已发送，若未生效请检查日志"
-                self?.scriptStatusLabel.textColor = .systemYellow
+                self?.rebootBtn.isEnabled = true
+                self?.respringBtn.isEnabled = true
+                self?.showPhoneResultAlert("注销失败", msg)
             }
         }
     }
 
-    // MARK: - 工具方法
+    // MARK: - 核心工具
 
-    /// 检查命令是否存在且可执行
-    private func commandExists(_ path: String) -> Bool {
-        if access(path, X_OK) == 0 { return true }
-        let r = runShellCommand("which \(path) 2>/dev/null")
-        return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// 执行 shell 命令并返回 exitCode（精简版，用于手机控制）
+    @discardableResult
+    private func phoneShell(_ command: String) -> Int32 {
+        var pid: pid_t = 0
+        let cArgs: [UnsafeMutablePointer<CChar>?] = [
+            strdup("/bin/sh"),
+            strdup("-c"),
+            strdup(command),
+            nil
+        ]
+        defer { cArgs.forEach { $0.map { free($0) } } }
+
+        let ret = posix_spawn(&pid, "/bin/sh", nil, nil, cArgs, nil)
+        guard ret == 0 else {
+            phoneLog("      posix_spawn 失败: \(ret)")
+            return ret
+        }
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        phoneLog("      shell 输出: pid=\(pid) rawStatus=\(status)")
+        return (status >> 8) & 0xFF
     }
 
-    /// 通过进程名获取 PID（兼容 BusyBox / 标准 ps）
-    private func getPID(of processName: String) -> pid_t? {
-        let r = runShellCommand("ps ax 2>/dev/null | grep -w \(processName) | grep -v grep | awk '{print $1}' | head -1")
-        let pidStr = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !pidStr.isEmpty, let pid = pid_t(pidStr), pid > 0 else { return nil }
-        return pid
+    /// 获取 SpringBoard 的 PID
+    private func getSpringBoardPID() -> pid_t? {
+        // 方式1: ps ax + grep (使用 runShellCommand 获取 stdout)
+        let result = runShellCommand("ps ax 2>/dev/null | grep -w [S]pringBoard | awk '{print $1}' | head -1")
+        phoneLog("      ps ax 结果: exitCode=\(result.exitCode) stdout=\(result.stdout.prefix(20))")
+        let pidStr1 = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let pid = pid_t(pidStr1), pid > 0 { return pid }
+
+        // 方式2: pgrep
+        let r2 = runShellCommand("pgrep -x SpringBoard 2>/dev/null")
+        phoneLog("      pgrep 结果: exitCode=\(r2.exitCode) stdout=\(r2.stdout.prefix(20))")
+        let pidStr2 = r2.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let pid = pid_t(pidStr2), pid > 0 { return pid }
+
+        return nil
+    }
+
+    /// 弹窗显示执行结果
+    private func showPhoneResultAlert(_ title: String, _ message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "确定", style: .default))
+        alert.addAction(UIAlertAction(title: "查看日志", style: .default) { [weak self] _ in
+            self?.viewPhoneLog()
+        })
+        present(alert, animated: true)
     }
 
     // ===================== 脚本控制操作 =====================
@@ -768,4 +863,13 @@ class ViewController: UIViewController {
         }
         return nil
     }
+}
+
+// MARK: - DateFormatter 工具
+extension DateFormatter {
+    static let phoneLogFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm:ss.SSS"
+        return f
+    }()
 }
