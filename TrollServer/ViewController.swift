@@ -23,7 +23,14 @@ class ViewController: UIViewController {
     private let stopBtn = UIButton(type: .system)
     private let pauseBtn = UIButton(type: .system)
     private let resumeBtn = UIButton(type: .system)
+    // 悬浮球控制按钮
+    private let showFloatBtn = UIButton(type: .system)
+    private let hideFloatBtn = UIButton(type: .system)
     private let scriptStatusLabel = UILabel()
+
+    // 手机控制按钮
+    private let rebootBtn = UIButton(type: .system)
+    private let respringBtn = UIButton(type: .system)
 
     // 定时刷新
     private var refreshTimer: Timer?
@@ -141,6 +148,12 @@ class ViewController: UIViewController {
         row2.distribution = .fillEqually
         row2.translatesAutoresizingMaskIntoConstraints = false
 
+        let row3 = UIStackView(arrangedSubviews: [showFloatBtn, hideFloatBtn])
+        row3.axis = .horizontal
+        row3.spacing = 12
+        row3.distribution = .fillEqually
+        row3.translatesAutoresizingMaskIntoConstraints = false
+
         // 结果反馈标签
         scriptStatusLabel.text = ""
         scriptStatusLabel.font = UIFont.systemFont(ofSize: 12)
@@ -154,19 +167,62 @@ class ViewController: UIViewController {
         scriptCard.layer.cornerRadius = 12
         scriptCard.translatesAutoresizingMaskIntoConstraints = false
 
-        let scriptStack = UIStackView(arrangedSubviews: [row1, row2, scriptStatusLabel])
+        let scriptStack = UIStackView(arrangedSubviews: [row1, row2, row3, scriptStatusLabel])
         scriptStack.axis = .vertical
         scriptStack.spacing = 10
         scriptStack.translatesAutoresizingMaskIntoConstraints = false
         scriptCard.addSubview(scriptStack)
 
-        // 配置四个按钮
+        // ---- 手机控制区域 ----
+        let phoneSectionTitle = UILabel()
+        phoneSectionTitle.text = "📱 手机控制"
+        phoneSectionTitle.font = UIFont.boldSystemFont(ofSize: 16)
+        phoneSectionTitle.textColor = .label
+        phoneSectionTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        let phoneRow = UIStackView(arrangedSubviews: [rebootBtn, respringBtn])
+        phoneRow.axis = .horizontal
+        phoneRow.spacing = 12
+        phoneRow.distribution = .fillEqually
+        phoneRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let phoneCard = UIView()
+        phoneCard.backgroundColor = .secondarySystemGroupedBackground
+        phoneCard.layer.cornerRadius = 12
+        phoneCard.translatesAutoresizingMaskIntoConstraints = false
+
+        let phoneStack = UIStackView(arrangedSubviews: [phoneRow])
+        phoneStack.axis = .vertical
+        phoneStack.spacing = 10
+        phoneStack.translatesAutoresizingMaskIntoConstraints = false
+        phoneCard.addSubview(phoneStack)
+
+        // 配置手机控制按钮
         _ = {
             let configs: [(UIButton, String, UIColor, Selector)] = [
-                (startBtn,  "▶ 启动",  UIColor.systemGreen,  #selector(scriptStart)),
-                (stopBtn,   "⏹ 停止",  UIColor.systemRed,    #selector(scriptStop)),
-                (pauseBtn,  "⏸ 暂停",  UIColor.systemOrange, #selector(scriptPause)),
-                (resumeBtn, "▶ 恢复",  UIColor.systemBlue,   #selector(scriptResume)),
+                (rebootBtn,   "🔄 重启手机", UIColor(red: 0.85, green: 0.22, blue: 0.18, alpha: 1.0), #selector(rebootDevice)),
+                (respringBtn, "🔄 注销手机", UIColor(red: 0.95, green: 0.52, blue: 0.10, alpha: 1.0), #selector(respringDevice)),
+            ]
+            for (btn, title, color, action) in configs {
+                btn.setTitle(title, for: .normal)
+                btn.setTitleColor(.white, for: .normal)
+                btn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 15)
+                btn.backgroundColor = color
+                btn.layer.cornerRadius = 10
+                btn.contentEdgeInsets = UIEdgeInsets(top: 12, left: 8, bottom: 12, right: 8)
+                btn.addTarget(self, action: action, for: .touchUpInside)
+            }
+        }()
+
+        // 配置按钮
+        _ = {
+            let configs: [(UIButton, String, UIColor, Selector)] = [
+                (startBtn,     "▶ 启动",       UIColor.systemGreen,  #selector(scriptStart)),
+                (stopBtn,      "⏹ 停止",       UIColor.systemRed,    #selector(scriptStop)),
+                (pauseBtn,     "⏸ 暂停",       UIColor.systemOrange, #selector(scriptPause)),
+                (resumeBtn,    "▶ 恢复",       UIColor.systemBlue,   #selector(scriptResume)),
+                (showFloatBtn, "🔵 显示悬浮球", UIColor.systemTeal,   #selector(scriptShowFloat)),
+                (hideFloatBtn, "🔴 隐藏悬浮球", UIColor.systemGray,   #selector(scriptHideFloat)),
             ]
             for (btn, title, color, action) in configs {
                 btn.setTitle(title, for: .normal)
@@ -196,6 +252,8 @@ class ViewController: UIViewController {
         contentView.addSubview(btnStack)
         contentView.addSubview(scriptSectionTitle)
         contentView.addSubview(scriptCard)
+        contentView.addSubview(phoneSectionTitle)
+        contentView.addSubview(phoneCard)
 
         NSLayoutConstraint.activate([
             // 滚动容器铺满整个视图
@@ -243,8 +301,21 @@ class ViewController: UIViewController {
             scriptStack.trailingAnchor.constraint(equalTo: scriptCard.trailingAnchor, constant: -16),
             scriptStack.bottomAnchor.constraint(equalTo: scriptCard.bottomAnchor, constant: -16),
 
+            // 手机控制区域
+            phoneSectionTitle.topAnchor.constraint(equalTo: scriptCard.bottomAnchor, constant: 28),
+            phoneSectionTitle.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+
+            phoneCard.topAnchor.constraint(equalTo: phoneSectionTitle.bottomAnchor, constant: 10),
+            phoneCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            phoneCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+            phoneStack.topAnchor.constraint(equalTo: phoneCard.topAnchor, constant: 16),
+            phoneStack.leadingAnchor.constraint(equalTo: phoneCard.leadingAnchor, constant: 16),
+            phoneStack.trailingAnchor.constraint(equalTo: phoneCard.trailingAnchor, constant: -16),
+            phoneStack.bottomAnchor.constraint(equalTo: phoneCard.bottomAnchor, constant: -16),
+
             // 关键: 内容底部锚定, 否则最后一块会被挤出屏幕且无法滚动
-            scriptCard.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
+            phoneCard.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
         ])
     }
 
@@ -336,6 +407,38 @@ class ViewController: UIViewController {
         updateStatus()
     }
 
+    // ===================== 手机控制操作 =====================
+
+    @objc private func rebootDevice() {
+        let alert = UIAlertController(
+            title: "⚠️ 重启手机",
+            message: "确定要重启手机吗？重启后设备将断开连接。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "确认重启", style: .destructive) { _ in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+                _ = runShellCommand("reboot")
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    @objc private func respringDevice() {
+        let alert = UIAlertController(
+            title: "⚠️ 注销手机",
+            message: "确定要注销（Respring）手机吗？SpringBoard 将重新启动。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "确认注销", style: .destructive) { _ in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+                _ = runShellCommand("killall -9 backboardd")
+            }
+        })
+        present(alert, animated: true)
+    }
+
     // ===================== 脚本控制操作 =====================
 
     private enum ScriptCommand: String {
@@ -368,6 +471,14 @@ class ViewController: UIViewController {
 
     @objc private func scriptResume() {
         sendScriptCommand(.resume)
+    }
+
+    @objc private func scriptShowFloat() {
+        sendFloatCommand(x: 0, y: 500, action: "显示悬浮球")
+    }
+
+    @objc private func scriptHideFloat() {
+        sendFloatCommand(x: 0, y: -100, action: "隐藏悬浮球")
     }
 
     private func sendScriptCommand(_ cmd: ScriptCommand) {
@@ -425,6 +536,57 @@ class ViewController: UIViewController {
         stopBtn.isEnabled = enabled
         pauseBtn.isEnabled = enabled
         resumeBtn.isEnabled = enabled
+        showFloatBtn.isEnabled = enabled
+        hideFloatBtn.isEnabled = enabled
+    }
+
+    private func sendFloatCommand(x: Int, y: Int, action: String) {
+        setScriptButtonsEnabled(false)
+        scriptStatusLabel.text = "⏳ 正在\(action)..." 
+        scriptStatusLabel.textColor = .secondaryLabel
+
+        let urlString = "http://127.0.0.1:8989/float?x=\(x)&y=\(y)"
+        guard let url = URL(string: urlString) else {
+            self.scriptStatusLabel.text = "URL 无效: \(urlString)"
+            self.scriptStatusLabel.textColor = .systemRed
+            self.setScriptButtonsEnabled(true)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        print("[Float] 📤 \(action): \(urlString)")
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+            if let error = error {
+                let msg = "\(action)失败: \(error.localizedDescription)"
+                print("[Float] ❌ \(msg)")
+                DispatchQueue.main.async {
+                    self.setScriptButtonsEnabled(true)
+                    self.scriptStatusLabel.text = msg
+                    self.scriptStatusLabel.textColor = .systemRed
+                }
+                return
+            }
+
+            let httpResponse = response as? HTTPURLResponse
+            let statusCode = httpResponse?.statusCode ?? -1
+            let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let success = (200...299).contains(statusCode)
+            let msg = "\(success ? "✅" : "⚠️") \(action) - HTTP \(statusCode): \(body.prefix(200))"
+            print("[Float] \(msg)")
+
+            DispatchQueue.main.async {
+                self.setScriptButtonsEnabled(true)
+                self.scriptStatusLabel.text = msg
+                self.scriptStatusLabel.textColor = success ? .systemGreen : .systemRed
+            }
+        }
+        task.resume()
     }
 
     private func showAlert(title: String, message: String, showLogButton: Bool = false) {
