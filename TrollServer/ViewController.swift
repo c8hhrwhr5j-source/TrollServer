@@ -516,25 +516,36 @@ class ViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
+            // 尝试提升为 root 用户（reboot() 需要 UID 0）
+            let originalUID = getuid()
+            let originalGID = getgid()
+            self.phoneLog("当前 UID=\(originalUID), GID=\(originalGID)")
+
+            let su = setuid(0)
+            let sg = setgid(0)
+            let newUID = getuid()
+            self.phoneLog("setuid(0)=\(su), setgid(0)=\(sg), 新 UID=\(newUID)")
+            if newUID == 0 {
+                self.phoneLog("✅ 已成功提升为 root 用户")
+            } else {
+                self.phoneLog("⚠️ 未能提升为 root，继续尝试...")
+            }
+
             // 方法1: 直接 reboot() 系统调用
-            self.phoneLog("[1/3] reboot(0) 系统调用...")
+            self.phoneLog("[1/2] reboot(0) 系统调用...")
             var ret = reboot(0)
             self.phoneLog("      reboot(0) => ret=\(ret) errno=\(errno): \(String(cString: strerror(errno)))")
+            // reboot 成功时不会返回，如果执行到这里说明失败了
 
             // 方法2: reboot(0x400)
             if ret != 0 {
-                self.phoneLog("[2/3] reboot(0x400) 系统调用...")
+                self.phoneLog("[2/2] reboot(0x400) 系统调用...")
                 ret = reboot(0x400)
                 self.phoneLog("      reboot(0x400) => ret=\(ret) errno=\(errno): \(String(cString: strerror(errno)))")
             }
 
-            // 方法3: launchctl reboot
-            self.phoneLog("[3/3] /bin/launchctl reboot...")
-            let r = self.phoneShell("/bin/launchctl reboot")
-            self.phoneLog("      launchctl reboot => exitCode=\(r)")
-
             // 如果代码执行到这里说明重启未生效
-            let msg = "所有重启方法均未生效(exitCode=\(r))，请查看日志"
+            let msg = "所有重启方法均未生效，请查看日志"
             self.phoneLog("❌ \(msg)")
             self.updatePhoneStatus(msg, color: .systemRed)
 
