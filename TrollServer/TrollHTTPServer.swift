@@ -780,41 +780,219 @@ class TrollHTTPServer {
         return .ok(json, contentType: "application/json")
     }
 
-    /// POST /api/reboot  → 重启设备（需要 root，daemon 模式下正常工作）
+    /// POST /api/reboot  → 重启设备（多策略，兼容 TrollStore 无 root 环境）
     private func handleReboot() -> HTTPResponse {
         let uid = getuid()
         print("[TrollServer] 🔴 收到重启请求 (UID=\(uid))")
 
-        sync()
+        sync()  // 先同步磁盘
 
-        let ret = reboot(0)
-        if ret == 0 {
-            // 不会走到这里，reboot 成功时系统直接重启
+        var attempts: [[String: Any]] = []
+        let isRoot = (uid == 0)
+
+        // ============================================================
+        // 策略1: 如果当前是 root，直接 reboot() 内核调用
+        // ============================================================
+        if isRoot {
+            print("[TrollServer] ✅ 当前 UID=0，直接调用 reboot()...")
+            attempts.append(["method": "reboot(0) root直调", "result": "executing..."])
+            reboot(0)
+            // 不会走到这里
+            attempts.append(["method": "reboot(0x400) root直调", "result": "executing..."])
+            reboot(0x400)
+        } else {
+            print("[TrollServer] ⚠️ 当前 UID=501(mobile)，尝试通过 setuid 代理重启...")
         }
 
-        let errMsg = String(cString: strerror(errno))
-        let isRoot = (uid == 0)
+        // ============================================================
+        // 策略2: 通过 trollstorehelper（TrollStore 的 setuid root 代理）
+        //   原理: posix_spawn 启动 setuid 二进制时，内核自动赋予 root 权限
+        //   即使父进程是 UID=501，子进程也能以 root 运行
+        // ============================================================
+        let helperCandidates: [(path: String, alias: String)] = [
+            ("/var/jb/usr/bin/trollstorehelper", "var/jb bootstrap"),
+            ("/usr/bin/trollstorehelper",            "系统标准"),
+            ("/usr/local/bin/trollstorehelper",      "本地安装"),
+        ]
+
+        var helperFound = false
+        for (hp, alias) in helperCandidates {
+            guard access(hp, X_OK) == 0 else { continue }
+
+            helperFound = true
+            print("[TrollServer] 🔧 找到 trollstorehelper: \(hp) (\(alias))")
+
+            // 验证 setuid 位
+            var st = stat()
+            let hasSetuid = (stat(hp, &st) == 0 && (st.st_mode & S_ISUID) != 0)
+            print("[TrollServer]    setuid 位: \(hasSetuid ? "✅ 已设置" : "❌ 未设置")")
+
+            // 尝试多种参数组合
+            let argGroups: [(args: [String], desc: String)] = [
+                (["reboot"], "reboot 子命令"),
+                (["system", "reboot"], "system reboot"),
+                (["/sbin/reboot"], "直接传递 /sbin/reboot"),
+            ]
+
+            for (args, desc) in argGroups {
+                let result = posixSpawnSync(hp, args: args)
+                let entry: [String: Any] = [
+                    "method": "trollstorehelper \(desc)",
+                    "path": hp,
+                    "args": args,
+                    "exitCode": result.exitCode,
+                    "output": String(result.stdout.prefix(300)),
+                    "hasSetuid": hasSetuid
+                ]
+                attempts.append(entry)
+                print("[TrollServer]    \(desc): exit=\(result.exitCode) out=\(result.stdout.prefix(100))")
+                // reboot 成功时进程不会返回
+            }
+            break  // 只用第一个找到的
+        }
+
+        if !helperFound {
+            print("[TrollServer] 🔍 trollstorehelper 未找到，搜索其他 setuid 二进制...")
+            // 宽泛搜索：扫描 /usr/bin /usr/sbin 找任意 setuid root 二进制
+            let otherHelpers = findSetuidBinaries()
+            for hp in otherHelpers.prefix(3) {
+                print("[TrollServer]   发现 setuid 二进制: \(hp)")
+                // 尝试用它来执行 reboot（通过 spawn 方式）
+                let result = posixSpawnSync(hp, args: ["/sbin/reboot"])
+                attempts.append([
+                    "method": "setuid \(hp)",
+                    "exitCode": result.exitCode,
+                    "output": String(result.stdout.prefix(200))
+                ])
+            }
+            if otherHelpers.isEmpty {
+                attempts.append(["method": "setuid 搜索", "result": "未找到任何 setuid 二进制"])
+            }
+        }
+
+        // ============================================================
+        // 策略3: 直接 reboot() 系统调用（仅 root 有效）
+        // ============================================================
+        let r0 = reboot(0)
+        let err0 = String(cString: strerror(errno))
+        attempts.append([
+            "method": "reboot(0)",
+            "ret": Int32(r0),
+            "errno": Int32(errno),
+            "error": err0
+        ])
+        print("[TrollServer]    reboot(0) => ret=\(r0) errno=\(errno): \(err0)")
+
+        let r1 = reboot(0x400)
+        let err1 = String(cString: strerror(errno))
+        attempts.append([
+            "method": "reboot(0x400)",
+            "ret": Int32(r1),
+            "errno": Int32(errno),
+            "error": err1
+        ])
+        print("[TrollServer]    reboot(0x400) => ret=\(r1) errno=\(errno): \(err1)")
+
+        // ============================================================
+        // 构建诊断响应
+        // ============================================================
+        let uidStr = isRoot ? "root(0)" : "mobile(501)"
+
         let detail: [String: Any] = [
             "success": false,
             "uid": uid,
-            "isRoot": isRoot,
-            "errno": Int32(errno),
-            "error": errMsg,
-            "hint": isRoot ? "reboot() 失败，请联系开发者" : "权限不足：当前 UID=mobile(501)，daemon 未以 root 运行。请确保应用通过 TrollStore 以 System 应用安装，然后重新打开 App 安装 daemon。"
+            "uidStr": uidStr,
+            "attempts": attempts,
+            "hint": "所有重启方法均失败 (\(uidStr))。"
+                  + (helperFound
+                    ? " 已找到 trollstorehelper 但重启未生效，请检查其 setuid 位及版本。"
+                    : " 未找到 trollstorehelper。请在 TrollStore 设置中启用 Helper。")
         ]
-        print("[TrollServer] ❌ reboot(0) 失败: \(errMsg)")
 
-        // 尝试 reboot(0x400)
-        let ret2 = reboot(0x400)
-        if ret2 == 0 {
-            // 同样不会走到这里
-        }
-        print("[TrollServer] ❌ reboot(0x400) 也失败")
-
-        guard let json = try? JSONSerialization.data(withJSONObject: detail) else {
+        var detailJSON: Data
+        do {
+            detailJSON = try JSONSerialization.data(withJSONObject: detail, options: .prettyPrinted)
+        } catch {
             return .internalError()
         }
-        return HTTPResponse(statusCode: 500, headers: ["Content-Type": "application/json"], body: json)
+
+        print("[TrollServer] ❌ 重启失败，共尝试 \(attempts.count) 种方法")
+        return HTTPResponse(statusCode: 500,
+                            headers: ["Content-Type": "application/json"],
+                            body: detailJSON)
+    }
+
+    // MARK: - posix_spawn 辅助函数
+
+    /// 同步 spawn 一个程序（解析参数列表），返回退出码与输出
+    private func posixSpawnSync(_ path: String, args: [String]) -> (exitCode: Int32, stdout: String) {
+        // 管道捕获 stdout
+        var pipeFds = [Int32](repeating: 0, count: 2)
+        guard pipe(&pipeFds) == 0 else {
+            return (exitCode: -1, stdout: "pipe() 失败")
+        }
+        let readFd = pipeFds[0]
+        let writeFd = pipeFds[1]
+
+        var fileActions: posix_spawn_file_actions_t? = nil
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_adddup2(&fileActions, writeFd, STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(&fileActions, writeFd, STDERR_FILENO)
+        posix_spawn_file_actions_addclose(&fileActions, readFd)
+        posix_spawn_file_actions_addclose(&fileActions, writeFd)
+
+        var argv: [UnsafeMutablePointer<CChar>?] = [strdup(path)]
+        for a in args { argv.append(strdup(a)) }
+        argv.append(nil)
+
+        var pid: pid_t = 0
+        let sp = posix_spawn(&pid, path, &fileActions, nil, &argv, nil)
+
+        for p in argv where p != nil { free(p) }
+        posix_spawn_file_actions_destroy(&fileActions)
+        close(writeFd)
+
+        guard sp == 0 else {
+            close(readFd)
+            return (exitCode: sp, stdout: "posix_spawn 失败: \(sp)")
+        }
+
+        var output = ""
+        let bufSize = 4096
+        var buffer = [CChar](repeating: 0, count: bufSize)
+        while true {
+            let n = read(readFd, &buffer, bufSize)
+            if n <= 0 { break }
+            if let s = String(bytes: Data(bytes: buffer, count: n), encoding: .utf8) {
+                output += s
+            }
+        }
+        close(readFd)
+
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        let exitCode: Int32 = ((status & 0o177) == 0) ? ((status >> 8) & 0xff) : -1
+
+        return (exitCode: exitCode, stdout: output)
+    }
+
+    /// 搜索 /usr/bin 和 /usr/sbin 下的 setuid 二进制
+    private func findSetuidBinaries() -> [String] {
+        var results: [String] = []
+        let searchDirs = ["/usr/bin", "/usr/sbin", "/usr/local/bin", "/bin", "/sbin"]
+        for dir in searchDirs {
+            guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+            for file in files {
+                let fullPath = "\(dir)/\(file)"
+                var st = stat()
+                if stat(fullPath, &st) == 0,
+                   (st.st_mode & S_ISUID) != 0,
+                   st.st_uid == 0 {
+                    results.append(fullPath)
+                }
+            }
+        }
+        return results
     }
 
     /// POST /api/respring  → 注销设备（通过 kill SpringBoard）
