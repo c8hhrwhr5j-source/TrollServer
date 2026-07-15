@@ -7,6 +7,25 @@ import Darwin
 //  (popen / WIFEXITED / WEXITSTATUS 在 iOS SDK 中被 __swift_unavailable)
 // ============================================================
 
+/// 检测 iOS 上可用的 shell 路径（TrollStore 环境通常无 /bin/sh）
+func findAvailableShell() -> String? {
+    let candidates = [
+        "/bin/sh",
+        "/bin/bash",
+        "/usr/bin/sh",
+        "/usr/bin/bash",
+        "/usr/local/bin/sh",
+        "/usr/local/bin/bash"
+    ]
+    for path in candidates {
+        if FileManager.default.fileExists(atPath: path) {
+            return path
+        }
+    }
+    return nil
+}
+
+
 func runShellCommand(
     _ command: String,
     environment: [String: String]? = nil
@@ -38,8 +57,9 @@ func runShellCommand(
     posix_spawn_file_actions_addclose(&fileActions, readFd)
     posix_spawn_file_actions_addclose(&fileActions, writeFd)
 
-    // 构造 argv: /bin/sh -c "<command>"
-    let argv: [String] = ["/bin/sh", "-c", fullCommand]
+    let shellPath = findAvailableShell() ?? "/bin/sh"
+    // 构造 argv: <shell> -c "<command>"
+    let argv: [String] = [shellPath, "-c", fullCommand]
     var argvC: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
     argvC.append(nil)
 
@@ -52,7 +72,7 @@ func runShellCommand(
     }
     envpC.append(nil)
 
-    let pathC = strdup("/bin/sh")
+    let pathC = strdup(shellPath)
 
     var pid: pid_t = 0
     let spawnStatus = posix_spawn(&pid, pathC, &fileActions, nil, &argvC, &envpC)

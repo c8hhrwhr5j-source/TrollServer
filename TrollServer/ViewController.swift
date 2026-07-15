@@ -1,4 +1,12 @@
 import UIKit
+import Darwin
+
+// 声明 libproc 函数，用于不依赖 shell 获取进程信息
+@_silgen_name("proc_listpids")
+func proc_listpids(_ type: UInt32, _ typeinfo: UInt32, _ buffer: UnsafeMutableRawPointer?, _ buffersize: Int32) -> Int32
+
+@_silgen_name("proc_name")
+func proc_name(_ pid: Int32, _ buffer: UnsafeMutableRawPointer?, _ buffersize: UInt32) -> Int32
 
 // ============================================================
 //  ViewController v2.0 - 服务状态页面
@@ -566,36 +574,37 @@ class ViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            // 方法1: 通过 ps 获取 SpringBoard PID，直接 kill(SIGKILL)
-            self.phoneLog("[1/4] ps 查找 SpringBoard PID...")
-            if let pid = self.getSpringBoardPID() {
+            // 方法1: 通过系统 API 获取 SpringBoard PID，直接 kill(SIGKILL)
+            self.phoneLog("[1/2] 查找 SpringBoard PID 并发送 SIGKILL...")
+            if let pid = self.getProcessPID(named: "SpringBoard") {
                 self.phoneLog("      找到 SpringBoard PID=\(pid)，发送 SIGKILL...")
                 let ret = kill(pid, SIGKILL)
                 self.phoneLog("      kill(\(pid), SIGKILL) => ret=\(ret) errno=\(errno)")
                 if ret == 0 {
                     self.phoneLog("✅ SIGKILL 已成功发送给 SpringBoard")
-                    return  // 成功，SpringBoard 收到信号后系统会 respring
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updatePhoneStatus("✅ SpringBoard 已终止，正在注销...", color: .systemGreen)
+                    }
+                    return
                 }
-            } else {
-                self.phoneLog("      ⚠️ ps 方式未找到 SpringBoard")
             }
 
-            // 方法2: killall -9 SpringBoard
-            self.phoneLog("[2/4] killall -9 SpringBoard...")
-            var r = self.phoneShell("killall -9 SpringBoard")
-            self.phoneLog("      killall SpringBoard => exitCode=\(r)")
+            // 方法2: 杀死 backboardd
+            self.phoneLog("[2/2] 查找 backboardd PID 并发送 SIGKILL...")
+            if let pid = self.getProcessPID(named: "backboardd") {
+                self.phoneLog("      找到 backboardd PID=\(pid)，发送 SIGKILL...")
+                let ret = kill(pid, SIGKILL)
+                self.phoneLog("      kill(\(pid), SIGKILL) => ret=\(ret) errno=\(errno)")
+                if ret == 0 {
+                    self.phoneLog("✅ SIGKILL 已成功发送给 backboardd")
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updatePhoneStatus("✅ backboardd 已终止，正在注销...", color: .systemGreen)
+                    }
+                    return
+                }
+            }
 
-            // 方法3: killall backboardd
-            self.phoneLog("[3/4] killall -9 backboardd...")
-            r = self.phoneShell("killall -9 backboardd")
-            self.phoneLog("      killall backboardd => exitCode=\(r)")
-
-            // 方法4: launchctl kickstart
-            self.phoneLog("[4/4] launchctl kickstart backboardd...")
-            r = self.phoneShell("/bin/launchctl kickstart -k system/com.apple.backboardd")
-            self.phoneLog("      kickstart backboardd => exitCode=\(r)")
-
-            let msg = "所有注销方法均已尝试，请查看日志"
+            let msg = "注销失败：未找到目标进程或发送信号失败"
             self.phoneLog("❌ \(msg)")
             self.updatePhoneStatus(msg, color: .systemRed)
 
@@ -613,15 +622,16 @@ class ViewController: UIViewController {
     @discardableResult
     private func phoneShell(_ command: String) -> Int32 {
         var pid: pid_t = 0
+        let shellPath = findAvailableShell() ?? "/bin/sh"
         let cArgs: [UnsafeMutablePointer<CChar>?] = [
-            strdup("/bin/sh"),
+            strdup(shellPath),
             strdup("-c"),
             strdup(command),
             nil
         ]
         defer { cArgs.forEach { $0.map { free($0) } } }
 
-        let ret = posix_spawn(&pid, "/bin/sh", nil, nil, cArgs, nil)
+        let ret = posix_spawn(&pid, shellPath, nil, nil, cArgs, nil)
         guard ret == 0 else {
             phoneLog("      posix_spawn 失败: \(ret)")
             return ret
@@ -632,20 +642,28 @@ class ViewController: UIViewController {
         return (status >> 8) & 0xFF
     }
 
-    /// 获取 SpringBoard 的 PID
-    private func getSpringBoardPID() -> pid_t? {
-        // 方式1: ps ax + grep (使用 runShellCommand 获取 stdout)
-        let result = runShellCommand("ps ax 2>/dev/null | grep -w [S]pringBoard | awk '{print $1}' | head -1")
-        phoneLog("      ps ax 结果: exitCode=\(result.exitCode) stdout=\(result.stdout.prefix(20))")
-        let pidStr1 = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let pid = pid_t(pidStr1), pid > 0 { return pid }
-
-        // 方式2: pgrep
-        let r2 = runShellCommand("pgrep -x SpringBoard 2>/dev/null")
-        phoneLog("      pgrep 结果: exitCode=\(r2.exitCode) stdout=\(r2.stdout.prefix(20))")
-        let pidStr2 = r2.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let pid = pid_t(pidStr2), pid > 0 { return pid }
-
+    /// 获取指定名称进程的 PID（不依赖 shell）
+    private func getProcessPID(named: String) -> pid_t? {
+        let maxPids = 4096
+        let bufferSize = MemoryLayout<pid_t>.size * maxPids
+        var buffer = [pid_t](repeating: 0, count: maxPids)
+        let count = proc_listpids(1, 0, &buffer, Int32(bufferSize))
+        let numPids = Int(count) / MemoryLayout<pid_t>.size
+        
+        for i in 0..<numPids {
+            let pid = buffer[i]
+            if pid <= 0 { continue }
+            var nameBuffer = [CChar](repeating: 0, count: 256)
+            let nameLen = proc_name(pid, &nameBuffer, 256)
+            if nameLen > 0 {
+                let name = String(cString: nameBuffer)
+                if name == named {
+                    phoneLog("      找到 \(named) PID=\(pid)")
+                    return pid
+                }
+            }
+        }
+        phoneLog("      ⚠️ 未找到 \(named)")
         return nil
     }
 
