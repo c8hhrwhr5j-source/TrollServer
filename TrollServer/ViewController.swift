@@ -418,7 +418,8 @@ class ViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "确认重启", style: .destructive) { _ in
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-                _ = runShellCommand("reboot")
+                print("[PhoneControl] 🔄 执行: launchctl reboot")
+                _ = runShellCommand("launchctl reboot")
             }
         })
         present(alert, animated: true)
@@ -433,7 +434,8 @@ class ViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "确认注销", style: .destructive) { _ in
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-                _ = runShellCommand("killall -9 backboardd")
+                print("[PhoneControl] 🔄 执行: killall -9 SpringBoard")
+                _ = runShellCommand("killall -9 SpringBoard")
             }
         })
         present(alert, animated: true)
