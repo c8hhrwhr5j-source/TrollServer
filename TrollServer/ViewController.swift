@@ -409,6 +409,8 @@ class ViewController: UIViewController {
 
     // ===================== 手机控制操作 =====================
 
+    // MARK: - 重启手机（多级回退 + 直接系统调用）
+
     @objc private func rebootDevice() {
         let alert = UIAlertController(
             title: "⚠️ 重启手机",
@@ -416,14 +418,65 @@ class ViewController: UIViewController {
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "确认重启", style: .destructive) { _ in
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-                print("[PhoneControl] 🔄 执行: launchctl reboot")
-                _ = runShellCommand("launchctl reboot")
-            }
+        alert.addAction(UIAlertAction(title: "确认重启", style: .destructive) { [weak self] _ in
+            self?.performReboot()
         })
         present(alert, animated: true)
     }
+
+    private func performReboot() {
+        print("[PhoneControl] ╔══════════════════════════════╗")
+        print("[PhoneControl] ║  🔄 执行「重启手机」         ║")
+        print("[PhoneControl] ╚══════════════════════════════╝")
+
+        // 0. 先同步文件系统
+        sync()
+        print("[PhoneControl] [prep] ✅ sync() 完成")
+
+        // 状态反馈：更新 scriptStatusLabel 提示用户
+        DispatchQueue.main.async { [weak self] in
+            self?.scriptStatusLabel.text = "⏳ 正在重启手机..."
+            self?.scriptStatusLabel.textColor = .systemOrange
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 方法1: 直接 reboot() 系统调用 (内核级，最可靠)
+            print("[PhoneControl] [1/4] reboot(0) 系统调用...")
+            var ret = reboot(0)
+            print("[PhoneControl]       reboot(0) => \(ret) | errno=\(errno): \(String(cString: strerror(errno)))")
+
+            // 方法2: 尝试 reboot(RB_AUTOBOOT) 即 reboot(0x400)
+            if ret != 0 {
+                print("[PhoneControl] [2/4] reboot(0x400) 系统调用...")
+                ret = reboot(0x400)
+                print("[PhoneControl]       reboot(0x400) => \(ret) | errno=\(errno): \(String(cString: strerror(errno)))")
+            }
+
+            // 方法3: /bin/launchctl reboot (全路径避免 PATH 问题)
+            print("[PhoneControl] [3/4] /bin/launchctl reboot...")
+            if self.commandExists("/bin/launchctl") {
+                let r = runShellCommand("/bin/launchctl reboot 2>&1")
+                print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+            } else {
+                print("[PhoneControl]       ⚠️ /bin/launchctl 不存在")
+            }
+
+            // 方法4: launchctl reboot userspace (用户空间重启，兼容旧版 iOS)
+            print("[PhoneControl] [4/4] /bin/launchctl reboot userspace...")
+            if self.commandExists("/bin/launchctl") {
+                let r = runShellCommand("/bin/launchctl reboot userspace 2>&1")
+                print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+            }
+
+            print("[PhoneControl] ⚠️ 所有方法均已尝试，若未重启请检查日志")
+            DispatchQueue.main.async { [weak self] in
+                self?.scriptStatusLabel.text = "⚠️ 重启指令已发送，若 3 秒后未重启请检查日志"
+                self?.scriptStatusLabel.textColor = .systemYellow
+            }
+        }
+    }
+
+    // MARK: - 注销手机（Respring，多级回退）
 
     @objc private func respringDevice() {
         let alert = UIAlertController(
@@ -432,13 +485,83 @@ class ViewController: UIViewController {
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "确认注销", style: .destructive) { _ in
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-                print("[PhoneControl] 🔄 执行: killall -9 SpringBoard")
-                _ = runShellCommand("killall -9 SpringBoard")
-            }
+        alert.addAction(UIAlertAction(title: "确认注销", style: .destructive) { [weak self] _ in
+            self?.performRespring()
         })
         present(alert, animated: true)
+    }
+
+    private func performRespring() {
+        print("[PhoneControl] ╔══════════════════════════════╗")
+        print("[PhoneControl] ║  🔄 执行「注销手机」         ║")
+        print("[PhoneControl] ╚══════════════════════════════╝")
+
+        DispatchQueue.main.async { [weak self] in
+            self?.scriptStatusLabel.text = "⏳ 正在注销手机..."
+            self?.scriptStatusLabel.textColor = .systemOrange
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 方法1: killall -9 SpringBoard (直接可靠)
+            print("[PhoneControl] [1/5] killall -9 SpringBoard...")
+            var r = runShellCommand("killall -9 SpringBoard 2>&1")
+            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+
+            // 方法2: 通过 ps 获取 SpringBoard PID 直接 kill (更精确)
+            print("[PhoneControl] [2/5] ps + grep 查找 SpringBoard PID...")
+            if let pid = self.getPID(of: "SpringBoard") {
+                print("[PhoneControl]       找到 PID=\(pid)，发送 SIGKILL...")
+                let ret = kill(pid, SIGKILL)
+                print("[PhoneControl]       kill(\(pid),SIGKILL)=>\(ret) errno=\(errno)")
+            } else {
+                // 备用方式: pgrep (部分系统可用)
+                let pgR = runShellCommand("pgrep -x SpringBoard 2>/dev/null")
+                if let pid2 = pid_t(pgR.stdout.trimmingCharacters(in: .whitespacesAndNewlines)), pid2 > 0 {
+                    print("[PhoneControl]       (pgrep) 找到 PID=\(pid2)，发送 SIGKILL...")
+                    kill(pid2, SIGKILL)
+                } else {
+                    print("[PhoneControl]       ⚠️ 未找到 SpringBoard 进程")
+                }
+            }
+
+            // 方法3: launchctl kickstart backboardd (优雅重启)
+            print("[PhoneControl] [3/5] /bin/launchctl kickstart backboardd...")
+            r = runShellCommand("/bin/launchctl kickstart -k system/com.apple.backboardd 2>&1")
+            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+
+            // 方法4: killall -9 backboardd (备选)
+            print("[PhoneControl] [4/5] killall -9 backboardd...")
+            r = runShellCommand("killall -9 backboardd 2>&1")
+            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+
+            // 方法5: sbreload (部分越狱设备可用)
+            print("[PhoneControl] [5/5] sbreload...")
+            r = runShellCommand("sbreload 2>&1")
+            print("[PhoneControl]       exitCode=\(r.exitCode) out=\(r.stdout.prefix(200))")
+
+            print("[PhoneControl] ⚠️ 所有方法均已尝试")
+            DispatchQueue.main.async { [weak self] in
+                self?.scriptStatusLabel.text = "⚠️ 注销指令已发送，若未生效请检查日志"
+                self?.scriptStatusLabel.textColor = .systemYellow
+            }
+        }
+    }
+
+    // MARK: - 工具方法
+
+    /// 检查命令是否存在且可执行
+    private func commandExists(_ path: String) -> Bool {
+        if access(path, X_OK) == 0 { return true }
+        let r = runShellCommand("which \(path) 2>/dev/null")
+        return !r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 通过进程名获取 PID（兼容 BusyBox / 标准 ps）
+    private func getPID(of processName: String) -> pid_t? {
+        let r = runShellCommand("ps ax 2>/dev/null | grep -w \(processName) | grep -v grep | awk '{print $1}' | head -1")
+        let pidStr = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pidStr.isEmpty, let pid = pid_t(pidStr), pid > 0 else { return nil }
+        return pid
     }
 
     // ===================== 脚本控制操作 =====================
