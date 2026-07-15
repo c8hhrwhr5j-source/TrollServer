@@ -1,13 +1,6 @@
 import UIKit
 import Darwin
 
-// 声明 libproc 函数，用于不依赖 shell 获取进程信息
-@_silgen_name("proc_listpids")
-func proc_listpids(_ type: UInt32, _ typeinfo: UInt32, _ buffer: UnsafeMutableRawPointer?, _ buffersize: Int32) -> Int32
-
-@_silgen_name("proc_name")
-func proc_name(_ pid: Int32, _ buffer: UnsafeMutableRawPointer?, _ buffersize: UInt32) -> Int32
-
 // ============================================================
 //  ViewController v2.0 - 服务状态页面
 // ============================================================
@@ -516,36 +509,43 @@ class ViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            // 尝试提升为 root 用户（reboot() 需要 UID 0）
-            let originalUID = getuid()
-            let originalGID = getgid()
-            self.phoneLog("当前 UID=\(originalUID), GID=\(originalGID)")
-
-            let su = setuid(0)
-            let sg = setgid(0)
-            let newUID = getuid()
-            self.phoneLog("setuid(0)=\(su), setgid(0)=\(sg), 新 UID=\(newUID)")
-            if newUID == 0 {
-                self.phoneLog("✅ 已成功提升为 root 用户")
-            } else {
-                self.phoneLog("⚠️ 未能提升为 root，继续尝试...")
-            }
-
-            // 方法1: 直接 reboot() 系统调用
-            self.phoneLog("[1/2] reboot(0) 系统调用...")
+            // 方法1: 直接 reboot(0) — 如果本进程有 root 权限则直接重启
+            self.phoneLog("[1/3] 直接 reboot() 尝试 (UID=\(getuid()))...")
             var ret = reboot(0)
             self.phoneLog("      reboot(0) => ret=\(ret) errno=\(errno): \(String(cString: strerror(errno)))")
-            // reboot 成功时不会返回，如果执行到这里说明失败了
-
-            // 方法2: reboot(0x400)
             if ret != 0 {
-                self.phoneLog("[2/2] reboot(0x400) 系统调用...")
+                self.phoneLog("[2/3] 直接 reboot(0x400)...")
                 ret = reboot(0x400)
                 self.phoneLog("      reboot(0x400) => ret=\(ret) errno=\(errno): \(String(cString: strerror(errno)))")
             }
 
-            // 如果代码执行到这里说明重启未生效
-            let msg = "所有重启方法均未生效，请查看日志"
+            // 方法2: 通过 HTTP 调用本地 daemon（daemon 以 root 运行，可以重启）
+            self.phoneLog("[3/3] 通过 HTTP 调用本地 daemon (127.0.0.1:51111/api/reboot)...")
+            let url = URL(string: "http://127.0.0.1:51111/api/reboot")!
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = 5
+
+            let sem = DispatchSemaphore(value: 0)
+            var daemonResult = "未收到响应"
+            let task = URLSession.shared.dataTask(with: req) { data, response, error in
+                if let httpResp = response as? HTTPURLResponse {
+                    daemonResult = "HTTP \(httpResp.statusCode)"
+                    if let d = data, let body = String(data: d, encoding: .utf8) {
+                        daemonResult += " body=\(body.prefix(80))"
+                    }
+                } else if let err = error {
+                    daemonResult = "请求失败: \(err.localizedDescription)"
+                }
+                sem.signal()
+            }
+            task.resume()
+            _ = sem.wait(timeout: .now() + 6)
+
+            self.phoneLog("      daemon 结果: \(daemonResult)")
+
+            // 如果 daemon 成功执行 reboot，设备会重启，不会执行到这里
+            let msg = "所有重启方法均未生效\n直接调用: EPERM (权限不足)\nDaemon: \(daemonResult)"
             self.phoneLog("❌ \(msg)")
             self.updatePhoneStatus(msg, color: .systemRed)
 

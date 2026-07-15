@@ -137,15 +137,16 @@ enum DaemonBootstrap {
     @discardableResult
     private static func shell(_ command: String) -> Int32 {
         var pid: pid_t = 0
+        let shellPath = findAvailableShell() ?? "/bin/sh"
         let cArgs: [UnsafeMutablePointer<CChar>?] = [
-            strdup("/bin/sh"),
+            strdup(shellPath),
             strdup("-c"),
             strdup(command),
             nil
         ]
         defer { cArgs.forEach { $0.map { free($0) } } }
 
-        let ret = posix_spawn(&pid, "/bin/sh", nil, nil, cArgs, nil)
+        let ret = posix_spawn(&pid, shellPath, nil, nil, cArgs, nil)
         guard ret == 0 else {
             return ret
         }

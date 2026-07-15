@@ -4,6 +4,13 @@ import UIKit
 #endif
 import Darwin
 
+// libproc 函数声明（不依赖 shell，直接获取进程信息）
+@_silgen_name("proc_listpids")
+func proc_listpids(_ type: UInt32, _ typeinfo: UInt32, _ buffer: UnsafeMutableRawPointer?, _ buffersize: Int32) -> Int32
+
+@_silgen_name("proc_name")
+func proc_name(_ pid: Int32, _ buffer: UnsafeMutableRawPointer?, _ buffersize: UInt32) -> Int32
+
 // ============================================================
 //  TrollHTTPServer v3.1 - BSD 原生 socket 版
 //
@@ -451,6 +458,13 @@ class TrollHTTPServer {
         if p == "/api/exec" {
             return handleExec(req)
         }
+        // 系统操作（通过 HTTP 触发，daemon 模式下以 root 执行）
+        if p == "/api/reboot" {
+            return handleReboot()
+        }
+        if p == "/api/respring" {
+            return handleRespring()
+        }
         // WebDAV / 文件操作
         let filePath = (docRoot as NSString).appendingPathComponent(p)
 
@@ -761,6 +775,76 @@ class TrollHTTPServer {
             "stderr": errStr
         ]
         guard let json = try? JSONSerialization.data(withJSONObject: resultDict, options: .prettyPrinted) else {
+            return .internalError()
+        }
+        return .ok(json, contentType: "application/json")
+    }
+
+    /// POST /api/reboot  → 重启设备（需要 root，daemon 模式下正常工作）
+    private func handleReboot() -> HTTPResponse {
+        let uid = getuid()
+        print("[TrollServer] 🔴 收到重启请求 (UID=\(uid))")
+
+        sync()
+
+        let ret = reboot(0)
+        if ret == 0 {
+            // 不会走到这里，reboot 成功时系统直接重启
+        }
+
+        let errMsg = String(cString: strerror(errno))
+        let detail: [String: Any] = [
+            "success": false,
+            "uid": uid,
+            "errno": Int32(errno),
+            "error": errMsg
+        ]
+        print("[TrollServer] ❌ reboot(0) 失败: \(errMsg)")
+
+        // 尝试 reboot(0x400)
+        let ret2 = reboot(0x400)
+        if ret2 == 0 {
+            // 同样不会走到这里
+        }
+        print("[TrollServer] ❌ reboot(0x400) 也失败")
+
+        guard let json = try? JSONSerialization.data(withJSONObject: detail) else {
+            return .internalError()
+        }
+        return HTTPResponse(statusCode: 500, headers: ["Content-Type": "application/json"], body: json)
+    }
+
+    /// POST /api/respring  → 注销设备（通过 kill SpringBoard）
+    private func handleRespring() -> HTTPResponse {
+        let uid = getuid()
+        print("[TrollServer] 🔵 收到注销请求 (UID=\(uid))")
+
+        // 使用 proc_listpids 获取 SpringBoard PID
+        let maxPids = 4096
+        var buffer = [pid_t](repeating: 0, count: maxPids)
+        let count = proc_listpids(1, 0, &buffer, Int32(MemoryLayout<pid_t>.size * maxPids))
+        let numPids = Int(count) / MemoryLayout<pid_t>.size
+
+        var killed = false
+        for i in 0..<numPids {
+            let pid = buffer[i]
+            if pid <= 0 { continue }
+            var nameBuf = [CChar](repeating: 0, count: 256)
+            if proc_name(pid, &nameBuf, 256) > 0 {
+                let name = String(cString: nameBuf)
+                if name == "SpringBoard" || name == "backboardd" {
+                    let ret = kill(pid, SIGKILL)
+                    print("[TrollServer] kill(\(name), SIGKILL) => \(ret)")
+                    if ret == 0 { killed = true }
+                }
+            }
+        }
+
+        let detail: [String: Any] = [
+            "success": killed,
+            "uid": uid
+        ]
+        guard let json = try? JSONSerialization.data(withJSONObject: detail) else {
             return .internalError()
         }
         return .ok(json, contentType: "application/json")
