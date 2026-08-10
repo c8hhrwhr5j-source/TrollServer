@@ -25,6 +25,7 @@ SWIFT_FILES=(
     "AppDelegate.swift"
     "DaemonServerRunner.swift"
     "ScriptControlServer.swift"
+    "InstallAPI.swift"
     "ViewController.swift"
 )
 

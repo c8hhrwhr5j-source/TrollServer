@@ -1,25 +1,32 @@
 import UIKit
 
 // ============================================================
-//  主界面控制器 - 显示脚本控制服务器状态 + 快捷指令按钮
+//  主界面控制器 - 脚本控制 + IPA安装 API + 快捷按钮
 // ============================================================
 
 class ViewController: UIViewController {
 
     private let serverRunner: DaemonServerRunner
 
+    // 状态标签
     private let scriptStatusLabel = UILabel()
+    private let installStatusLabel = UILabel()
     private let ipAddressLabel = UILabel()
 
     private var refreshTimer: Timer?
 
-    // 按钮
+    // 脚本控制按钮
     private let startBtn = UIButton(type: .system)
     private let stopBtn = UIButton(type: .system)
     private let pauseBtn = UIButton(type: .system)
     private let resumeBtn = UIButton(type: .system)
     private let hideFloatBtn = UIButton(type: .system)
     private let showFloatBtn = UIButton(type: .system)
+
+    // IPA 安装输入
+    private let ipaURLField = UITextField()
+    private let installBtn = UIButton(type: .system)
+    private let installResultLabel = UILabel()
 
     init(serverRunner: DaemonServerRunner) {
         self.serverRunner = serverRunner
@@ -55,7 +62,7 @@ class ViewController: UIViewController {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let subtitleLabel = UILabel()
-        subtitleLabel.text = "脚本控制服务"
+        subtitleLabel.text = "脚本控制 + IPA安装"
         subtitleLabel.font = UIFont.systemFont(ofSize: 14)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.textAlignment = .center
@@ -69,12 +76,14 @@ class ViewController: UIViewController {
 
         scriptStatusLabel.font = UIFont.systemFont(ofSize: 15)
         scriptStatusLabel.numberOfLines = 0
+        installStatusLabel.font = UIFont.systemFont(ofSize: 13)
+        installStatusLabel.numberOfLines = 0
         ipAddressLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
         ipAddressLabel.textColor = .systemBlue
 
-        let stackView = UIStackView(arrangedSubviews: [scriptStatusLabel, ipAddressLabel])
+        let stackView = UIStackView(arrangedSubviews: [scriptStatusLabel, installStatusLabel, ipAddressLabel])
         stackView.axis = .vertical
-        stackView.spacing = 10
+        stackView.spacing = 8
         stackView.translatesAutoresizingMaskIntoConstraints = false
         statusCard.addSubview(stackView)
 
@@ -95,7 +104,30 @@ class ViewController: UIViewController {
 
         let floatRow = makeButtonRow([hideFloatBtn, showFloatBtn])
 
-        // 滚动视图（防止小屏幕装不下）
+        // IPA 安装区域
+        let ipaLabel = makeSectionLabel("IPA 安装（自动下载+安装）")
+
+        ipaURLField.placeholder = "输入 IPA 下载地址..."
+        ipaURLField.borderStyle = .roundedRect
+        ipaURLField.font = UIFont.systemFont(ofSize: 14)
+        ipaURLField.autocapitalizationType = .none
+        ipaURLField.autocorrectionType = .no
+        ipaURLField.keyboardType = .URL
+        ipaURLField.translatesAutoresizingMaskIntoConstraints = false
+
+        setupButton(installBtn, title: "下载并安装", color: .systemIndigo, action: #selector(sendInstall))
+
+        installResultLabel.font = UIFont.systemFont(ofSize: 12)
+        installResultLabel.textColor = .secondaryLabel
+        installResultLabel.numberOfLines = 3
+        installResultLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let ipaStack = UIStackView(arrangedSubviews: [ipaURLField, installBtn, installResultLabel])
+        ipaStack.axis = .vertical
+        ipaStack.spacing = 10
+        ipaStack.translatesAutoresizingMaskIntoConstraints = false
+
+        // 滚动视图
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -110,6 +142,8 @@ class ViewController: UIViewController {
         contentView.addSubview(taskRow2)
         contentView.addSubview(floatLabel)
         contentView.addSubview(floatRow)
+        contentView.addSubview(ipaLabel)
+        contentView.addSubview(ipaStack)
 
         scrollView.addSubview(contentView)
         view.addSubview(scrollView)
@@ -158,7 +192,14 @@ class ViewController: UIViewController {
             floatRow.topAnchor.constraint(equalTo: floatLabel.bottomAnchor, constant: 8),
             floatRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             floatRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            floatRow.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -40),
+
+            ipaLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 24),
+            ipaLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+
+            ipaStack.topAnchor.constraint(equalTo: ipaLabel.bottomAnchor, constant: 8),
+            ipaStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            ipaStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            ipaStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -40),
         ])
     }
 
@@ -209,10 +250,14 @@ class ViewController: UIViewController {
             let sStatus = self.serverRunner.scriptServer?.getStatus()
             let sRunning = sStatus?.running ?? false
 
+            let iStatus = self.serverRunner.installAPI?.getStatus()
+            let iRunning = iStatus?.running ?? false
+            let helper = iStatus?.helper ?? "none"
+
             DispatchQueue.main.async {
                 let attr = NSMutableAttributedString()
                 attr.append(NSAttributedString(
-                    string: "\(sRunning ? iconRunning : iconStopped) 脚本控制 (转发)",
+                    string: "\(sRunning ? iconRunning : iconStopped) 脚本控制",
                     attributes: [
                         .font: UIFont.systemFont(ofSize: 15, weight: .semibold),
                         .foregroundColor: UIColor.label
@@ -227,6 +272,23 @@ class ViewController: UIViewController {
                 ))
                 self.scriptStatusLabel.attributedText = attr
 
+                let iAttr = NSMutableAttributedString()
+                iAttr.append(NSAttributedString(
+                    string: "\(iRunning ? iconRunning : iconStopped) IPA安装API",
+                    attributes: [
+                        .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
+                        .foregroundColor: iRunning ? UIColor.systemGreen : UIColor.systemRed
+                    ]
+                ))
+                iAttr.append(NSAttributedString(
+                    string: "  端口 :\(iStatus?.port ?? 8081)  helper: \(helper)",
+                    attributes: [
+                        .font: UIFont.systemFont(ofSize: 12),
+                        .foregroundColor: helper != "none" ? UIColor.systemTeal : UIColor.systemOrange
+                    ]
+                ))
+                self.installStatusLabel.attributedText = iAttr
+
                 if let ip = self.getWiFiIP() {
                     self.ipAddressLabel.text = "\u{1F4F6} \(ip)"
                 } else {
@@ -236,7 +298,7 @@ class ViewController: UIViewController {
         }
     }
 
-    // MARK: - 网络请求
+    // MARK: - 脚本控制请求
 
     private func sendRequest(_ path: String) {
         guard let url = URL(string: "http://127.0.0.1:8989\(path)") else { return }
@@ -260,6 +322,69 @@ class ViewController: UIViewController {
     @objc private func sendResume()   { sendRequest("/task?cmd=resume") }
     @objc private func sendHideFloat(){ sendRequest("/float?x=0&y=-100") }
     @objc private func sendShowFloat(){ sendRequest("/float?x=1&y=100") }
+
+    // MARK: - IPA 安装
+
+    @objc private func sendInstall() {
+        guard let urlStr = ipaURLField.text?.trimmingCharacters(in: .whitespacesAndNewlines), !urlStr.isEmpty else {
+            showInstallResult("请输入 IPA 下载地址", isError: true)
+            return
+        }
+
+        installBtn.isEnabled = false
+        installBtn.setTitle("下载中...", for: .normal)
+        installResultLabel.text = "正在下载..."
+        installResultLabel.textColor = .systemOrange
+
+        guard let url = URL(string: "http://127.0.0.1:8081/install") else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 120 // 下载大文件需要较长时间
+
+        let body = ["url": urlStr]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.installBtn.isEnabled = true
+                self?.installBtn.setTitle("下载并安装", for: .normal)
+            }
+
+            if let error = error {
+                DispatchQueue.main.async {
+                    self?.showInstallResult("请求失败: \(error.localizedDescription)", isError: true)
+                }
+                return
+            }
+
+            if let data = data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let success = json["success"] as? Bool ?? false
+                let message = json["message"] as? String ?? "未知结果"
+                DispatchQueue.main.async {
+                    self?.showInstallResult(message, isError: !success)
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self?.showInstallResult("无法解析服务器响应", isError: true)
+                }
+            }
+        }.resume()
+    }
+
+    private func showInstallResult(_ text: String, isError: Bool) {
+        installResultLabel.text = text
+        installResultLabel.textColor = isError ? .systemRed : .systemGreen
+
+        // 2 秒后清除提示
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            if self?.installResultLabel.text == text {
+                self?.installResultLabel.text = ""
+            }
+        }
+    }
 
     // MARK: - 工具
 

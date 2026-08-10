@@ -50,6 +50,7 @@ jobs:
             "TrollServer/ViewController.swift"
             "TrollServer/DaemonServerRunner.swift"
             "TrollServer/ScriptControlServer.swift"
+            "TrollServer/InstallAPI.swift"
           )
 
           # 复制 Info.plist
