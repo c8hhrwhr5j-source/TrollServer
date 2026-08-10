@@ -12,17 +12,43 @@ class InstallAPI {
     private let port: UInt16
     private(set) var isRunning = false
 
-    /// 辅助二进制文件可能的路径列表
+    /// 辅助二进制文件可能的路径列表（按常见优先级排序）
     private let helperPaths = [
         "/var/jb/usr/bin/trollstorehelper",
         "/usr/bin/trollstorehelper",
+        "/usr/local/bin/trollstorehelper",
         "/Applications/TrollStore.app/trollstorehelper",
+        "/private/var/jb/usr/bin/trollstorehelper",
     ]
 
     /// 找到的可用 helper 路径
     private var availableHelper: String? {
+        // 1. 扫描已知路径
         for path in helperPaths {
-            if FileManager.default.fileExists(atPath: path) {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        // 2. 运行时搜索 /Applications/TrollStore.app 和 /var/jb 下所有 trollstorehelper
+        if let found = findTrollStoreHelper() {
+            return found
+        }
+        return nil
+    }
+
+    /// 运行时搜索 trollstorehelper
+    private func findTrollStoreHelper() -> String? {
+        let searchDirs = [
+            "/Applications/TrollStore.app",
+            "/var/jb/usr/bin",
+            "/private/var/jb/usr/bin",
+            "/usr/bin",
+            "/usr/local/bin",
+        ]
+        for dir in searchDirs {
+            let path = "\(dir)/trollstorehelper"
+            if FileManager.default.isExecutableFile(atPath: path) {
+                print("[InstallAPI] 运行时搜索到 helper: \(path)")
                 return path
             }
         }

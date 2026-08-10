@@ -167,7 +167,7 @@ class ViewController: UIViewController {
 
         // ---- 下载应用按钮 ----
         let downloadLabel = makeSectionLabel("下载最新应用脚本")
-        setupButton(downloadBtn, title: "下载最新应用脚本", color: .systemIndigo, action: #selector(startDownloadApp))
+        setupButton(downloadBtn, title: "下载最新应用脚本", color: .systemRed, action: #selector(confirmDownloadLatestAppScript))
 
         progressLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         progressLabel.textColor = .secondaryLabel
@@ -422,9 +422,22 @@ class ViewController: UIViewController {
     // MARK: - 下载 + 安装最新应用脚本
     // ============================================================
 
+    @objc private func confirmDownloadLatestAppScript() {
+        let alert = UIAlertController(
+            title: "确认下载",
+            message: "是否下载并安装最新版脚本程序？此操作会强制关闭并覆盖当前应用。",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel, handler: nil))
+        alert.addAction(UIAlertAction(title: "确定", style: .destructive) { [weak self] _ in
+            self?.startDownloadApp()
+        })
+        present(alert, animated: true)
+    }
+
     @objc private func startDownloadApp() {
         downloadBtn.isEnabled = false
-        downloadBtn.setTitle("准备下载...", for: .normal)
+        downloadBtn.setTitle("正在下载中...", for: .normal)
         progressLabel.text = ""
 
         appLog("═══ 开始下载最新应用脚本 ═══", level: .info)
