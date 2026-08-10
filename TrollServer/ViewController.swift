@@ -740,20 +740,17 @@ class ViewController: UIViewController {
         return Bundle.main.bundlePath + "/bin/" + name
     }
 
-    /// 重启：通过 FBSSystemService + com.apple.frontboard.shutdown 权限
+    /// 重启：FBSSystemService.reboot + com.apple.frontboard.shutdown
     /// 方案演进及失败原因见 REBOOT_JOURNAL.md
     private func rebootDevice() {
-        // 方案 5（当前）：FBSSystemService — 与 TrollAutoScript（壳）相同的方式
-        // 需要 com.apple.frontboard.shutdown 权限，通过 FrontBoard 框架的标准 API 触发热重启
         guard let cls = NSClassFromString("FBSSystemService") as? NSObject.Type,
               let svc = cls.value(forKey: "sharedService") as? NSObject else {
-            appLog("✗ 无法加载 FBSSystemService，FrontBoard 不可用", level: .error)
+            appLog("✗ 无法加载 FBSSystemService", level: .error)
             return
         }
-        appLog("⏳ 通过 FBSSystemService 发送重启指令...", level: .warn)
-        svc.perform(NSSelectorFromString("shutdown"))
-        // shutdown 是同步调用，正常情况不会返回
-        appLog("✓ 重启指令已发送 — 设备应即将重启", level: .success)
+        appLog("⏳ 通过 FBSSystemService.reboot 重启设备...", level: .warn)
+        svc.perform(NSSelectorFromString("reboot"))
+        appLog("✓ 重启指令已发送", level: .success)
     }
 
     /// 注销（respring）：先尝试 bundle 内的 launchctl userspace，失败则 killall backboardd

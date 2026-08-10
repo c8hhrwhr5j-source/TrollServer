@@ -40,38 +40,40 @@
 
 **根因**：虽然主二进制有 `com.apple.system.reboot` entitlement，但该 entitlement 在 TrollStore 环境下可能不被内核认可（需要苹果平台签名而非 ldid 伪签名）。
 
-## 方案 5：FBSSystemService + com.apple.frontboard.shutdown（当前方案）— ⏳ 待验证
+## 方案 5：FBSSystemService.shutdown + com.apple.frontboard.shutdown — ⚠️ 执行了关机而非重启
 
-**方法**：逆向分析 TrollAutoScript（壳）的实现，发现其使用 `FBSSystemService` + `com.apple.frontboard.shutdown`，而非裸 reboot() syscall。
+**方法**：逆向分析 TrollAutoScript（壳），发现其使用 `FBSSystemService` + `com.apple.frontboard.shutdown`。
+
+使用了 `perform(NSSelectorFromString("shutdown"))`。
+
+**表现**：设备关机（power off），而非重启。用户反馈"这是关机，不是重启"。
+
+**根因**：`FBSSystemService` 有两个方法：
+- `-[FBSSystemService shutdown]` — 关机
+- `-[FBSSystemService reboot]` — 重启
+
+壳中这两个被注册为独立命令（`shutdown` 和 `reboot`），各自调用不同的 selector。之前错误地用了 `shutdown` selector。
+
+## 方案 6：FBSSystemService.reboot + com.apple.frontboard.shutdown（当前方案）— ⏳ 待验证
+
+**方法**：将 selector 从 `"shutdown"` 改为 `"reboot"`。
 
 ```swift
-let cls = NSClassFromString("FBSSystemService") as? NSObject.Type
-let svc = cls?.value(forKey: "sharedService") as? NSObject
-svc?.perform(NSSelectorFromString("shutdown"))
+svc.perform(NSSelectorFromString("reboot"))
 ```
 
-**逆向发现**：
-- TrollAutoScript 二进制中不含 `com.apple.system.reboot`，但含 `com.apple.frontboard.shutdown`
-- 二进制引用了 `_OBJC_CLASS_$_FBSSystemService`（FrontBoardServices.framework）
-- `bin/reboot` 依赖 `libjailbreak.dylib`（jailbreak-only），不是实际使用的重启工具
-- 重启功能在 SwiftUI 的 `rebootView`/`shutdownView` 中，走的是主二进制自身逻辑
+**逆向深入分析**：
+- `bin/reboot` 依赖 `libjailbreak.dylib`（`jb_oneshot_entitle_now`），jailbreak-only
+- 壳的命令注册列表：`rebackboardd.reboot.shutdown.refreshUicache` — 四个独立命令
+- `rebootView` 和 `shutdownView` 是独立的 SwiftUI 视图
+- FBSSystemService 在壳中被两处引用（`_OBJC_CLASS_$_FBSSystemService`）
+- `sharedService` selector 旁就是命令处理逻辑
+- `com.apple.frontboard.shutdown` 权限同时覆盖 shutdown 和 reboot 两个操作
 
-**优势**：
-- `com.apple.frontboard.shutdown` 是苹果公开的内部权限，TrollStore/ldid 可正常签署
-- 不需要 root 权限（FBSSystemService 通过 XPC 与 backboardd 通信）
-- 不需要 external helper 二进制
-- 与 TrollAutoScript 完全相同的实现方式
-
-### 改动清单
+### 当前改动
 | 文件 | 改动 |
 |------|------|
-| `TrollServer.entitlements` | 替换 `com.apple.system.reboot` → `com.apple.frontboard.shutdown` |
-| `main.swift` | 移除 `--reboot` 自产卵逻辑 |
-| `ViewController.swift` | `rebootDevice()` 改用 `FBSSystemService.sharedService.shutdown` |
-| `reboot_helper.c` | 删除（不再需要） |
-| `build.sh` | 移除 reboot_helper.c 编译步骤 |
-| `.github/workflows/build.yml` | 移除 reboot_helper.c 编译步骤 |
-
-### 预期结果
-- 调用 `[FBSSystemService.sharedService shutdown]` 后设备立即黑屏重启
-- 无需 root 权限，无需外部 helper
+| `TrollServer.entitlements` | `com.apple.frontboard.shutdown` |
+| `ViewController.swift` | `rebootDevice()` 用 `FBSSystemService.reboot` selector |
+| `reboot_helper.c` | 已删除 |
+| `build.sh` / CI | 已清理
