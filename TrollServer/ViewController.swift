@@ -7,6 +7,14 @@ import UIKit
 
 // 日志缓冲区（支持 AccessoryKit 样式）
 private let sharedLogBuffer = NSMutableAttributedString()
+/// 串行写队列，防止多线程竞争崩溃
+private let logWriteQueue = DispatchQueue(label: "com.trollserver.log", qos: .userInitiated)
+/// 时间格式化器复用，避免每次 appLog 都新建
+private let logFmt: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss"
+    return f
+}()
 private var logUpdateHandler: (() -> Void)?
 
 class ViewController: UIViewController {
@@ -85,9 +93,7 @@ class ViewController: UIViewController {
     private enum LogLevel { case info, success, error, progress }
 
     private func appLog(_ msg: String, level: LogLevel = .info) {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let ts = formatter.string(from: Date())
+        let ts = logFmt.string(from: Date())
 
         let color: UIColor
         switch level {
@@ -97,18 +103,20 @@ class ViewController: UIViewController {
         case .progress: color = UIColor.systemOrange
         }
 
-        if sharedLogBuffer.length > 0 {
-            sharedLogBuffer.append(NSAttributedString(string: "\n"))
+        logWriteQueue.async { [weak self] in
+            if sharedLogBuffer.length > 0 {
+                sharedLogBuffer.append(NSAttributedString(string: "\n"))
+            }
+            sharedLogBuffer.append(NSAttributedString(
+                string: "[\(ts)] ",
+                attributes: [.font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: UIColor.secondaryLabel]
+            ))
+            sharedLogBuffer.append(NSAttributedString(
+                string: msg,
+                attributes: [.font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: color]
+            ))
+            logUpdateHandler?()
         }
-        sharedLogBuffer.append(NSAttributedString(
-            string: "[\(ts)] ",
-            attributes: [.font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: UIColor.secondaryLabel]
-        ))
-        sharedLogBuffer.append(NSAttributedString(
-            string: msg,
-            attributes: [.font: UIFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: color]
-        ))
-        logUpdateHandler?()
     }
 
     // ============================================================
@@ -324,7 +332,7 @@ class ViewController: UIViewController {
             DispatchQueue.main.async {
                 let attr = NSMutableAttributedString()
                 attr.append(NSAttributedString(
-                    string: "\(icon) IPA安装API :\(iStatus?.port ?? 8081)  helper: \(helper)",
+                    string: "\(icon) IPA安装API  helper: \(helper)",
                     attributes: [
                         .font: UIFont.systemFont(ofSize: 13),
                         .foregroundColor: iRunning ? UIColor.systemGreen : UIColor.systemRed
@@ -355,7 +363,7 @@ class ViewController: UIViewController {
         default:       return
         }
 
-        appLog("发送: \(chineseName) → 8989 → :8899", level: .info)
+        appLog("发送: \(chineseName) → 脚本控制服务", level: .info)
 
         guard let url = URL(string: "http://127.0.0.1:8989\(path)") else {
             appLog("✗ 内部错误: URL 无效", level: .error)
@@ -384,7 +392,7 @@ class ViewController: UIViewController {
 
     private func sendFloatCommand(_ x: String, _ y: String, chineseName: String) {
         let path = "/float?x=\(x)&y=\(y)"
-        appLog("发送: \(chineseName) → 8989 → :8899", level: .info)
+        appLog("发送: \(chineseName) → 脚本控制服务", level: .info)
 
         guard let url = URL(string: "http://127.0.0.1:8989\(path)") else {
             appLog("✗ 内部错误: URL 无效", level: .error)
@@ -489,22 +497,31 @@ class ViewController: UIViewController {
         appLog("✓ 下载完成: \(sizeStr)", level: .success)
         progressLabel.text = "下载完成: \(sizeStr)"
 
-        // 开始安装
-        appLog("正在安装最新程序...", level: .progress)
+        // 开始静默安装（带进度）
+        appLog("正在静默安装最新程序...", level: .progress)
         progressLabel.text = "正在安装..."
 
-        self.serverRunner.installAPI?.installFromLocalPath(destPath) { [weak self] success, message in
-            guard let self = self else { return }
-
-            if success {
-                self.appLog("✓ 安装完成: \(message)", level: .success)
-                self.progressLabel.text = "✅ 安装完成"
-            } else {
-                self.appLog("✗ 安装失败: \(message)", level: .error)
-                self.progressLabel.text = "❌ 安装失败: \(message)"
+        self.serverRunner.installAPI?.installFromLocalPath(
+            destPath,
+            progress: { [weak self] phase, detail, percent in
+                guard let self = self else { return }
+                self.progressLabel.text = "[\(percent)%] \(detail)"
+                if percent % 25 == 0 {
+                    self.appLog("[\(phase)] \(detail)", level: .progress)
+                }
+            },
+            completion: { [weak self] success, message in
+                guard let self = self else { return }
+                if success {
+                    self.appLog("✓ 安装成功: \(message)", level: .success)
+                    self.progressLabel.text = "安装完成"
+                } else {
+                    self.appLog("✗ 安装失败: \(message)", level: .error)
+                    self.progressLabel.text = "安装失败"
+                }
+                self.resetDownloadBtn()
             }
-            self.resetDownloadBtn()
-        }
+        )
     }
 
     /// 主地址失败时尝试备用地址
@@ -513,8 +530,10 @@ class ViewController: UIViewController {
             appLog("✗ 主地址下载失败: \(error.localizedDescription)", level: .error)
             appLog("尝试备用地址下载...", level: .info)
             progressLabel.text = "主地址失败，尝试备用地址..."
+            let fallback = self.fallbackURL
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.tryDownload(self!.fallbackURL, isPrimary: false)
+                guard let self = self else { return }
+                self.tryDownload(fallback, isPrimary: false)
             }
         } else {
             appLog("✗ 备用地址也失败: \(error.localizedDescription)", level: .error)

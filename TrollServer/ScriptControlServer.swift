@@ -112,10 +112,14 @@ class ScriptControlServer {
                     }))
                 case .failed:
                     // 脚本 APP 未运行，返回 503
-                    let errorResp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 28\r\n\r\nScript app not running on :8899"
-                    clientConn.send(content: errorResp.data(using: .utf8)!, completion: .contentProcessed({ _ in
+                    let errorResp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 28\r\n\r\nScript app not running"
+                    if let data = errorResp.data(using: .utf8) {
+                        clientConn.send(content: data, completion: .contentProcessed({ _ in
+                            clientConn.cancel()
+                        }))
+                    } else {
                         clientConn.cancel()
-                    }))
+                    }
                     scriptConn.cancel()
                 case .cancelled:
                     clientConn.cancel()

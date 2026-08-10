@@ -12,47 +12,9 @@ class InstallAPI {
     private let port: UInt16
     private(set) var isRunning = false
 
-    /// 辅助二进制文件可能的路径列表（按常见优先级排序）
-    private let helperPaths = [
-        "/var/jb/usr/bin/trollstorehelper",
-        "/usr/bin/trollstorehelper",
-        "/usr/local/bin/trollstorehelper",
-        "/Applications/TrollStore.app/trollstorehelper",
-        "/private/var/jb/usr/bin/trollstorehelper",
-    ]
-
-    /// 找到的可用 helper 路径
+    /// 找到的可用 helper 路径（委托给 SilentInstall）
     private var availableHelper: String? {
-        // 1. 扫描已知路径
-        for path in helperPaths {
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
-            }
-        }
-        // 2. 运行时搜索 /Applications/TrollStore.app 和 /var/jb 下所有 trollstorehelper
-        if let found = findTrollStoreHelper() {
-            return found
-        }
-        return nil
-    }
-
-    /// 运行时搜索 trollstorehelper
-    private func findTrollStoreHelper() -> String? {
-        let searchDirs = [
-            "/Applications/TrollStore.app",
-            "/var/jb/usr/bin",
-            "/private/var/jb/usr/bin",
-            "/usr/bin",
-            "/usr/local/bin",
-        ]
-        for dir in searchDirs {
-            let path = "\(dir)/trollstorehelper"
-            if FileManager.default.isExecutableFile(atPath: path) {
-                print("[InstallAPI] 运行时搜索到 helper: \(path)")
-                return path
-            }
-        }
-        return nil
+        return SilentInstall.findTrollStoreHelper()
     }
 
     init(port: UInt16 = 8081) {
@@ -210,13 +172,16 @@ class InstallAPI {
                 return
             }
 
-            // 执行安装
-            let result = self.installIPA(at: destPath)
-
-            if result.success {
-                self.sendResponse(conn, status: 200, body: jsonOK(result.message))
-            } else {
-                self.sendResponse(conn, status: 500, body: jsonError(result.message))
+            // 执行静默安装
+            SilentInstall.install(ipaPath: destPath, progress: nil) { result in
+                switch result {
+                case .success(let message, _):
+                    self.sendResponse(conn, status: 200, body: jsonOK(message))
+                case .failure(let message):
+                    self.sendResponse(conn, status: 500, body: jsonError(message))
+                case .progress:
+                    break
+                }
             }
         }
 
@@ -225,186 +190,46 @@ class InstallAPI {
 
     // MARK: - 公开安装方法（供 ViewController 直接调用）
 
-    /// 安装本地 IPA 文件，回调在主线程
-    func installFromLocalPath(_ path: String, completion: @escaping (Bool, String) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                DispatchQueue.main.async { completion(false, "Internal error") }
-                return
-            }
-            let result = self.installIPA(at: path)
-            DispatchQueue.main.async { completion(result.success, result.message) }
-        }
-    }
-
-    // MARK: - IPA 安装（强制覆盖）
-
-    private func installIPA(at path: String) -> (success: Bool, message: String) {
-        // 步骤0: 强制关闭目标应用
-        forceKillApp(ipaPath: path)
-
-        // 步骤1: 先尝试卸载旧版本（确保数据清理）
-        if let helper = availableHelper {
-            if let execName = getExecutableName(fromIPA: path) {
-                print("[InstallAPI] 先尝试卸载旧版本: \(execName)")
-                let uninstallRet = spawnAndWait(helper, arguments: ["uninstall", execName])
-                print("[InstallAPI] 卸载结果 exit code: \(uninstallRet)")
-                usleep(500000) // 等 0.5s
-            }
+    /// 安装本地 IPA 文件，带进度回调
+    func installFromLocalPath(
+        _ path: String,
+        progress: ((String, String, Int) -> Void)? = nil,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        // 先做环境检查
+        let env = SilentInstall.fullEnvironmentCheck()
+        if !env.ok {
+            print("[InstallAPI] 环境检查失败:\n\(env.messages.joined(separator: "\n"))")
         }
 
-        // 步骤2: trollstorehelper install
-        if let helper = availableHelper {
-            print("[InstallAPI] 使用 helper 安装: \(helper)")
-            let result = spawnAndWait(helper, arguments: ["install", path])
-            print("[InstallAPI] trollstorehelper install exit code: \(result)")
-            if result == 0 {
-                // 安装成功后等 1 秒让系统注册
-                usleep(1000000)
-                return (true, "已通过 trollstorehelper 覆盖安装")
-            } else {
-                print("[InstallAPI] trollstorehelper install 返回非 0，尝试备用方式...")
-            }
-        } else {
-            print("[InstallAPI] trollstorehelper 未找到，尝试备用方式...")
-        }
-
-        // 步骤3: 复制到 TrollStore 检测目录
-        let tsCopyTargets = [
-            "/var/mobile/.TrollStore/tmp/",
-            "/var/mobile/Library/Caches/TrollStore/",
-        ]
-        for tsPath in tsCopyTargets {
-            let dest = "\(tsPath)\(URL(fileURLWithPath: path).lastPathComponent)"
-            do {
-                try? FileManager.default.createDirectory(atPath: tsPath, withIntermediateDirectories: true)
-                if FileManager.default.fileExists(atPath: dest) {
-                    try FileManager.default.removeItem(atPath: dest)
+        SilentInstall.install(
+            ipaPath: path,
+            progress: { result in
+                if case .progress(let phase, let detail, let percent) = result {
+                    DispatchQueue.main.async { progress?(phase, detail, percent) }
                 }
-                try FileManager.default.copyItem(atPath: path, toPath: dest)
-                print("[InstallAPI] 已复制到: \(dest)")
-                return (true, "已复制到 TrollStore 目录，请切换到 TrollStore 完成安装")
-            } catch {
-                print("[InstallAPI] 复制到 \(tsPath) 失败: \(error)")
-            }
-        }
-
-        return (false, "所有安装方式均失败，请检查 TrollStore 是否正常运行")
-    }
-
-    /// 多路径查找并执行 killall 强制关闭目标应用
-    private func forceKillApp(ipaPath: String) {
-        // 尝试从 IPA 中提取可执行文件名
-        var targets: [String] = []
-        if let execName = getExecutableName(fromIPA: ipaPath) {
-            targets.append(execName)
-        }
-
-        guard !targets.isEmpty else {
-            print("[InstallAPI] 无法获取可执行文件名，跳过 killall")
-            return
-        }
-
-        // killall 可能的路径列表
-        let killallPaths = [
-            "/usr/bin/killall",
-            "/bin/killall",
-            "/usr/sbin/killall",
-            "/var/jb/usr/bin/killall",
-        ]
-
-        for target in targets {
-            // 先尝试直接路径
-            var killed = false
-            for kp in killallPaths {
-                if FileManager.default.fileExists(atPath: kp) {
-                    print("[InstallAPI] killall: \(kp) -9 \(target)")
-                    let ret = spawnAndWait(kp, arguments: ["-9", target])
-                    if ret == 0 {
-                        print("[InstallAPI] 成功关闭: \(target)")
-                        killed = true
+            },
+            completion: { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let message, _):
+                        completion(true, message)
+                    case .failure(let message):
+                        completion(false, message)
+                    case .progress:
                         break
                     }
                 }
             }
-
-            // fallback: 通过 shell 执行
-            if !killed {
-                print("[InstallAPI] shell killall: \(target)")
-                _ = spawnAndWait("/bin/sh", arguments: ["-c", "killall -9 \(target) 2>/dev/null; true"])
-                killed = true
-            }
-        }
-
-        if !targets.isEmpty {
-            usleep(500000) // 等 0.5s 确保进程完全退出
-        }
+        )
     }
 
-    // MARK: - 从 IPA 提取可执行文件名
-
-    /// 从 IPA 中读取 Info.plist 获取 CFBundleExecutable
-    private func getExecutableName(fromIPA ipaPath: String) -> String? {
-        // 用 unzip -p 输出 Payload/*/Info.plist 的内容（shell 通配符自动展开）
-        guard let plistData = spawnAndCapture("/bin/sh", arguments: ["-c", "unzip -p '\(ipaPath)' 'Payload/*/Info.plist' 2>/dev/null"]) else {
-            print("[InstallAPI] 无法解压 IPA 获取 Info.plist")
-            return nil
-        }
-
-        guard let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
-              let execName = plist["CFBundleExecutable"] as? String else {
-            print("[InstallAPI] 无法解析 Info.plist")
-            return nil
-        }
-
-        print("[InstallAPI] 可执行文件名: \(execName)")
-        return execName
+    /// 简化版：安装本地 IPA（兼容旧接口）
+    func installFromLocalPath(_ path: String, completion: @escaping (Bool, String) -> Void) {
+        installFromLocalPath(path, progress: nil, completion: completion)
     }
 
-    /// posix_spawn 并捕获 stdout
-    private func spawnAndCapture(_ path: String, arguments: [String]) -> Data? {
-        var pipeFD: [Int32] = [0, 0]
-        guard pipe(&pipeFD) == 0 else { return nil }
-
-        var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
-        posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
-        posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
-
-        let cargs = arguments.map { strdup($0) }
-        defer {
-            cargs.forEach { free($0) }
-            posix_spawn_file_actions_destroy(&fileActions)
-        }
-
-        var pid: pid_t = 0
-        var argv = cargs + [nil]
-        let ret = argv.withUnsafeMutableBufferPointer { ptr in
-            posix_spawn(&pid, path, &fileActions, nil, ptr.baseAddress, nil)
-        }
-        close(pipeFD[1])
-
-        guard ret == 0 else { close(pipeFD[0]); return nil }
-
-        var data = Data()
-        var status: Int32 = 0
-        var buffer = [UInt8](repeating: 0, count: 4096)
-
-        while true {
-            let n = read(pipeFD[0], &buffer, buffer.count)
-            if n > 0 {
-                data.append(buffer, count: n)
-            } else {
-                break
-            }
-        }
-        close(pipeFD[0])
-
-        waitpid(pid, &status, 0)
-        return data.isEmpty ? nil : data
-    }
-
-    // MARK: - posix_spawn 辅助
+    // MARK: - posix_spawn 辅助（保留用于 handleInstall 中的下载）
 
     private func spawnAndWait(_ path: String, arguments: [String]) -> Int32 {
         let cargs = arguments.map { strdup($0) }
@@ -447,9 +272,13 @@ class InstallAPI {
         \(body)
         """
 
-        conn.send(content: resp.data(using: .utf8)!, completion: .contentProcessed({ _ in
+        if let data = resp.data(using: .utf8) {
+            conn.send(content: data, completion: .contentProcessed({ _ in
+                conn.cancel()
+            }))
+        } else {
             conn.cancel()
-        }))
+        }
     }
 
     private func jsonOK(_ message: String) -> String {
