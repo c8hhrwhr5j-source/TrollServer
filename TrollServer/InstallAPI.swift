@@ -214,33 +214,41 @@ class InstallAPI {
     // MARK: - IPA 安装（强制覆盖）
 
     private func installIPA(at path: String) -> (success: Bool, message: String) {
-        // 步骤0: 从 IPA 中提取可执行文件名，强制关闭正在运行的目标应用
-        if let execName = getExecutableName(fromIPA: path) {
-            print("[InstallAPI] 强制关闭应用: \(execName)")
-            _ = spawnAndWait("/usr/bin/killall", arguments: ["-9", execName])
-            usleep(300000) // 等 0.3s 确保进程退出
+        // 步骤0: 强制关闭目标应用
+        forceKillApp(ipaPath: path)
+
+        // 步骤1: 先尝试卸载旧版本（确保数据清理）
+        if let helper = availableHelper {
+            if let execName = getExecutableName(fromIPA: path) {
+                print("[InstallAPI] 先尝试卸载旧版本: \(execName)")
+                let uninstallRet = spawnAndWait(helper, arguments: ["uninstall", execName])
+                print("[InstallAPI] 卸载结果 exit code: \(uninstallRet)")
+                usleep(500000) // 等 0.5s
+            }
         }
 
-        // 策略1: trollstorehelper
+        // 步骤2: trollstorehelper install
         if let helper = availableHelper {
-            print("[InstallAPI] Using helper: \(helper)")
+            print("[InstallAPI] 使用 helper 安装: \(helper)")
             let result = spawnAndWait(helper, arguments: ["install", path])
+            print("[InstallAPI] trollstorehelper install exit code: \(result)")
             if result == 0 {
-                return (true, "已通过 trollstorehelper 安装")
+                // 安装成功后等 1 秒让系统注册
+                usleep(1000000)
+                return (true, "已通过 trollstorehelper 覆盖安装")
             } else {
-                print("[InstallAPI] trollstorehelper exit code: \(result)")
-                // 不直接失败，继续尝试其他方式
+                print("[InstallAPI] trollstorehelper install 返回非 0，尝试备用方式...")
             }
         } else {
-            print("[InstallAPI] trollstorehelper not found, trying fallback...")
+            print("[InstallAPI] trollstorehelper 未找到，尝试备用方式...")
         }
 
-        // 策略2: 复制到 TrollStore 临时目录（TrollStore 会自动检测并安装）
-        let trollStorePaths = [
+        // 步骤3: 复制到 TrollStore 检测目录
+        let tsCopyTargets = [
             "/var/mobile/.TrollStore/tmp/",
             "/var/mobile/Library/Caches/TrollStore/",
         ]
-        for tsPath in trollStorePaths {
+        for tsPath in tsCopyTargets {
             let dest = "\(tsPath)\(URL(fileURLWithPath: path).lastPathComponent)"
             do {
                 try? FileManager.default.createDirectory(atPath: tsPath, withIntermediateDirectories: true)
@@ -248,14 +256,63 @@ class InstallAPI {
                     try FileManager.default.removeItem(atPath: dest)
                 }
                 try FileManager.default.copyItem(atPath: path, toPath: dest)
-                print("[InstallAPI] Copied to: \(dest)")
-                return (true, "Copied to TrollStore directory, check device for install prompt")
+                print("[InstallAPI] 已复制到: \(dest)")
+                return (true, "已复制到 TrollStore 目录，请切换到 TrollStore 完成安装")
             } catch {
-                print("[InstallAPI] Copy to \(tsPath) failed: \(error)")
+                print("[InstallAPI] 复制到 \(tsPath) 失败: \(error)")
             }
         }
 
-        return (false, "No installation method available. Check trollstorehelper.")
+        return (false, "所有安装方式均失败，请检查 TrollStore 是否正常运行")
+    }
+
+    /// 多路径查找并执行 killall 强制关闭目标应用
+    private func forceKillApp(ipaPath: String) {
+        // 尝试从 IPA 中提取可执行文件名
+        var targets: [String] = []
+        if let execName = getExecutableName(fromIPA: ipaPath) {
+            targets.append(execName)
+        }
+
+        guard !targets.isEmpty else {
+            print("[InstallAPI] 无法获取可执行文件名，跳过 killall")
+            return
+        }
+
+        // killall 可能的路径列表
+        let killallPaths = [
+            "/usr/bin/killall",
+            "/bin/killall",
+            "/usr/sbin/killall",
+            "/var/jb/usr/bin/killall",
+        ]
+
+        for target in targets {
+            // 先尝试直接路径
+            var killed = false
+            for kp in killallPaths {
+                if FileManager.default.fileExists(atPath: kp) {
+                    print("[InstallAPI] killall: \(kp) -9 \(target)")
+                    let ret = spawnAndWait(kp, arguments: ["-9", target])
+                    if ret == 0 {
+                        print("[InstallAPI] 成功关闭: \(target)")
+                        killed = true
+                        break
+                    }
+                }
+            }
+
+            // fallback: 通过 shell 执行
+            if !killed {
+                print("[InstallAPI] shell killall: \(target)")
+                _ = spawnAndWait("/bin/sh", arguments: ["-c", "killall -9 \(target) 2>/dev/null; true"])
+                killed = true
+            }
+        }
+
+        if !targets.isEmpty {
+            usleep(500000) // 等 0.5s 确保进程完全退出
+        }
     }
 
     // MARK: - 从 IPA 提取可执行文件名

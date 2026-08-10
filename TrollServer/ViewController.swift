@@ -428,7 +428,7 @@ class ViewController: UIViewController {
         progressLabel.text = ""
 
         appLog("═══ 开始下载最新应用脚本 ═══", level: .info)
-        appLog("尝试主地址: \(primaryURL)", level: .info)
+        appLog("尝试主地址下载...", level: .info)
 
         tryDownload(primaryURL, isPrimary: true)
     }
@@ -498,7 +498,7 @@ class ViewController: UIViewController {
     fileprivate func onDownloadFailed(_ error: Error, urlStr: String, isPrimary: Bool) {
         if isPrimary {
             appLog("✗ 主地址下载失败: \(error.localizedDescription)", level: .error)
-            appLog("尝试备用地址: \(fallbackURL)", level: .info)
+            appLog("尝试备用地址下载...", level: .info)
             progressLabel.text = "主地址失败，尝试备用地址..."
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.tryDownload(self!.fallbackURL, isPrimary: false)
