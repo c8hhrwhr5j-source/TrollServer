@@ -24,7 +24,7 @@
 	<true/>
 	<key>com.apple.private.persona-mgmt</key>
 	<true/>
-	<key>com.apple.system.reboot</key>
+	<key>com.apple.frontboard.shutdown</key>
 	<true/>
 </dict>
 </plist>

@@ -740,26 +740,20 @@ class ViewController: UIViewController {
         return Bundle.main.bundlePath + "/bin/" + name
     }
 
-    /// 重启：自产卵（spawn 自身二进制 + --reboot 标志）
-    /// 此前尝试过的方案及失败原因见 REBOOT_JOURNAL.md
+    /// 重启：通过 FBSSystemService + com.apple.frontboard.shutdown 权限
+    /// 方案演进及失败原因见 REBOOT_JOURNAL.md
     private func rebootDevice() {
-        // 方案 4（当前）：spawn 主二进制自身，传入 --reboot 标志
-        // 优势：子进程天然继承主二进制的 entitlements（含 com.apple.system.reboot），
-        //       配合 persona=root，满足 reboot() 的两个必要条件。
-        let selfBin = Bundle.main.executablePath ?? ""
-        if selfBin.isEmpty {
-            appLog("✗ 无法获取自身二进制路径", level: .error)
+        // 方案 5（当前）：FBSSystemService — 与 TrollAutoScript（壳）相同的方式
+        // 需要 com.apple.frontboard.shutdown 权限，通过 FrontBoard 框架的标准 API 触发热重启
+        guard let cls = NSClassFromString("FBSSystemService") as? NSObject.Type,
+              let svc = cls.value(forKey: "sharedService") as? NSObject else {
+            appLog("✗ 无法加载 FBSSystemService，FrontBoard 不可用", level: .error)
             return
         }
-
-        let ret = spawnAndWait(path: selfBin, args: [selfBin, "--reboot"])
-        if ret == 0 {
-            appLog("✓ 重启指令执行成功 — 设备正在重启", level: .success)
-        } else if ret == 1 {
-            appLog("✗ reboot() 调用失败（返回 1），可能缺少 com.apple.system.reboot 权限", level: .error)
-        } else {
-            appLog("✗ spawn 失败，posix_spawn 返回: \(ret)", level: .error)
-        }
+        appLog("⏳ 通过 FBSSystemService 发送重启指令...", level: .warn)
+        svc.perform(NSSelectorFromString("shutdown"))
+        // shutdown 是同步调用，正常情况不会返回
+        appLog("✓ 重启指令已发送 — 设备应即将重启", level: .success)
     }
 
     /// 注销（respring）：先尝试 bundle 内的 launchctl userspace，失败则 killall backboardd
