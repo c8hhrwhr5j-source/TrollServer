@@ -16,5 +16,11 @@
 	<true/>
 	<key>platform-application</key>
 	<true/>
+	<key>com.apple.private.xpc.launchd.userspace-reboot</key>
+	<true/>
+	<key>com.apple.private.xpc.launchd.reboot</key>
+	<true/>
+	<key>com.apple.frontboard.systemappservices</key>
+	<true/>
 </dict>
 </plist>

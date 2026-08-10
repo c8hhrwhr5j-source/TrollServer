@@ -3,6 +3,10 @@ import Darwin
 
 @_silgen_name("waitpid") func waitpid(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>!, _ options: Int32) -> pid_t
 
+// POSIX wait 状态宏
+private func WIFEXITED(_ status: Int32) -> Bool { return (status & 0x7f) == 0 }
+private func WEXITSTATUS(_ status: Int32) -> Int32 { return (status >> 8) & 0xff }
+
 // ============================================================
 //  主界面控制器
 //  功能：脚本控制按钮 | 下载安装最新脚本 | 实时日志
@@ -766,7 +770,11 @@ class ViewController: UIViewController {
         guard ret == 0 else { return ret }
         var status: Int32 = 0
         waitpid(pid, &status, 0)
-        return ret
+        // 返回子进程实际退出码，而非 posix_spawn 的返回值
+        if WIFEXITED(status) {
+            return WEXITSTATUS(status)
+        }
+        return -1 // 子进程异常终止
     }
 
     @objc private func rebootTapped()   { performRebootAction("reboot",   displayName: "重启") }
