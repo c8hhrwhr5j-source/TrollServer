@@ -49,6 +49,7 @@ jobs:
             "TrollServer/DaemonServerRunner.swift"
             "TrollServer/ScriptControlServer.swift"
             "TrollServer/InstallAPI.swift"
+            "TrollServer/SilentInstall.swift"
           )
 
           # 复制 Info.plist
