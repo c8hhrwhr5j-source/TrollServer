@@ -23,10 +23,10 @@ class ViewController: UIViewController {
 
     // 状态
     private let ipAddressLabel = UILabel()
-    private let modelLabel = UILabel()
-    private let memoryLabel = UILabel()
-    private let serialLabel = UILabel()
-    private let sysVersionLabel = UILabel()
+    private var modelLabel = UILabel()
+    private var memoryLabel = UILabel()
+    private var serialLabel = UILabel()
+    private var sysVersionLabel = UILabel()
 
     private var refreshTimer: Timer?
 
