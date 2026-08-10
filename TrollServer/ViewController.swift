@@ -345,7 +345,7 @@ class ViewController: UIViewController {
     // MARK: - 脚本控制按钮
     // ============================================================
 
-    private func sendScriptCommand(_ cmd: String) {
+    private func sendScriptCommand(_ cmd: String, chineseName: String) {
         let path: String
         switch cmd {
         case "start":  path = "/task?cmd=start";  break
@@ -355,7 +355,7 @@ class ViewController: UIViewController {
         default:       return
         }
 
-        appLog("发送: \(cmd) → 8989 → :8899", level: .info)
+        appLog("发送: \(chineseName) → 8989 → :8899", level: .info)
 
         guard let url = URL(string: "http://127.0.0.1:8989\(path)") else {
             appLog("✗ 内部错误: URL 无效", level: .error)
@@ -368,23 +368,23 @@ class ViewController: UIViewController {
 
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, error in
             if let error = error {
-                self?.appLog("✗ \(cmd) 失败: \(error.localizedDescription)", level: .error)
+                self?.appLog("✗ \(chineseName) 失败: \(error.localizedDescription)", level: .error)
                 return
             }
             if let httpResp = resp as? HTTPURLResponse {
                 let ok = (200...299).contains(httpResp.statusCode)
                 if !ok {
-                    self?.appLog("✗ \(cmd) HTTP \(httpResp.statusCode) (脚本APP可能未运行)", level: .error)
+                    self?.appLog("✗ \(chineseName) HTTP \(httpResp.statusCode)（脚本APP可能未运行）", level: .error)
                 } else {
-                    self?.appLog("✓ \(cmd) 成功 (HTTP \(httpResp.statusCode))", level: .success)
+                    self?.appLog("✓ \(chineseName) 成功（HTTP \(httpResp.statusCode)）", level: .success)
                 }
             }
         }.resume()
     }
 
-    private func sendFloatCommand(_ x: String, _ y: String) {
+    private func sendFloatCommand(_ x: String, _ y: String, chineseName: String) {
         let path = "/float?x=\(x)&y=\(y)"
-        appLog("发送: float(\(x),\(y)) → 8989 → :8899", level: .info)
+        appLog("发送: \(chineseName) → 8989 → :8899", level: .info)
 
         guard let url = URL(string: "http://127.0.0.1:8989\(path)") else {
             appLog("✗ 内部错误: URL 无效", level: .error)
@@ -397,26 +397,26 @@ class ViewController: UIViewController {
 
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, error in
             if let error = error {
-                self?.appLog("✗ 悬浮窗命令失败: \(error.localizedDescription)", level: .error)
+                self?.appLog("✗ \(chineseName) 失败: \(error.localizedDescription)", level: .error)
                 return
             }
             if let httpResp = resp as? HTTPURLResponse {
                 let ok = (200...299).contains(httpResp.statusCode)
                 if !ok {
-                    self?.appLog("✗ 悬浮窗 HTTP \(httpResp.statusCode) (脚本APP可能未运行)", level: .error)
+                    self?.appLog("✗ \(chineseName) HTTP \(httpResp.statusCode)（脚本APP可能未运行）", level: .error)
                 } else {
-                    self?.appLog("✓ 悬浮窗命令成功 (HTTP \(httpResp.statusCode))", level: .success)
+                    self?.appLog("✓ \(chineseName) 成功（HTTP \(httpResp.statusCode)）", level: .success)
                 }
             }
         }.resume()
     }
 
-    @objc private func sendStart()     { sendScriptCommand("start") }
-    @objc private func sendStop()      { sendScriptCommand("stop") }
-    @objc private func sendPause()     { sendScriptCommand("pause") }
-    @objc private func sendResume()    { sendScriptCommand("resume") }
-    @objc private func sendHideFloat() { sendFloatCommand("0", "-100") }
-    @objc private func sendShowFloat() { sendFloatCommand("1", "100") }
+    @objc private func sendStart()     { sendScriptCommand("start",  chineseName: "启动脚本") }
+    @objc private func sendStop()      { sendScriptCommand("stop",   chineseName: "停止脚本") }
+    @objc private func sendPause()     { sendScriptCommand("pause",  chineseName: "暂停脚本") }
+    @objc private func sendResume()    { sendScriptCommand("resume", chineseName: "恢复脚本") }
+    @objc private func sendHideFloat() { sendFloatCommand("0", "-100", chineseName: "隐藏悬浮窗") }
+    @objc private func sendShowFloat() { sendFloatCommand("1", "100",  chineseName: "显示悬浮窗") }
 
     // ============================================================
     // MARK: - 下载 + 安装最新应用脚本

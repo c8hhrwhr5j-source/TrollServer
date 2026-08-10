@@ -211,15 +211,22 @@ class InstallAPI {
         }
     }
 
-    // MARK: - IPA 安装
+    // MARK: - IPA 安装（强制覆盖）
 
     private func installIPA(at path: String) -> (success: Bool, message: String) {
+        // 步骤0: 从 IPA 中提取可执行文件名，强制关闭正在运行的目标应用
+        if let execName = getExecutableName(fromIPA: path) {
+            print("[InstallAPI] 强制关闭应用: \(execName)")
+            _ = spawnAndWait("/usr/bin/killall", arguments: ["-9", execName])
+            usleep(300000) // 等 0.3s 确保进程退出
+        }
+
         // 策略1: trollstorehelper
         if let helper = availableHelper {
             print("[InstallAPI] Using helper: \(helper)")
             let result = spawnAndWait(helper, arguments: ["install", path])
             if result == 0 {
-                return (true, "Installed via trollstorehelper")
+                return (true, "已通过 trollstorehelper 安装")
             } else {
                 print("[InstallAPI] trollstorehelper exit code: \(result)")
                 // 不直接失败，继续尝试其他方式
@@ -249,6 +256,69 @@ class InstallAPI {
         }
 
         return (false, "No installation method available. Check trollstorehelper.")
+    }
+
+    // MARK: - 从 IPA 提取可执行文件名
+
+    /// 从 IPA 中读取 Info.plist 获取 CFBundleExecutable
+    private func getExecutableName(fromIPA ipaPath: String) -> String? {
+        // 用 unzip -p 输出 Payload/*/Info.plist 的内容（shell 通配符自动展开）
+        guard let plistData = spawnAndCapture("/bin/sh", arguments: ["-c", "unzip -p '\(ipaPath)' 'Payload/*/Info.plist' 2>/dev/null"]) else {
+            print("[InstallAPI] 无法解压 IPA 获取 Info.plist")
+            return nil
+        }
+
+        guard let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
+              let execName = plist["CFBundleExecutable"] as? String else {
+            print("[InstallAPI] 无法解析 Info.plist")
+            return nil
+        }
+
+        print("[InstallAPI] 可执行文件名: \(execName)")
+        return execName
+    }
+
+    /// posix_spawn 并捕获 stdout
+    private func spawnAndCapture(_ path: String, arguments: [String]) -> Data? {
+        var pipeFD: [Int32] = [0, 0]
+        guard pipe(&pipeFD) == 0 else { return nil }
+
+        var fileActions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&fileActions)
+        posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
+        posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
+
+        let cargs = arguments.map { strdup($0) }
+        defer {
+            cargs.forEach { free($0) }
+            posix_spawn_file_actions_destroy(&fileActions!)
+        }
+
+        var pid: pid_t = 0
+        var argv = cargs + [nil]
+        let ret = argv.withUnsafeMutableBufferPointer { ptr in
+            posix_spawn(&pid, path, &fileActions, nil, ptr.baseAddress, nil)
+        }
+        close(pipeFD[1])
+
+        guard ret == 0 else { close(pipeFD[0]); return nil }
+
+        var data = Data()
+        var status: Int32 = 0
+        var buffer = [UInt8](repeating: 0, count: 4096)
+
+        while true {
+            let n = read(pipeFD[0], &buffer, buffer.count)
+            if n > 0 {
+                data.append(buffer, count: n)
+            } else {
+                break
+            }
+        }
+        close(pipeFD[0])
+
+        waitpid(pid, &status, 0)
+        return data.isEmpty ? nil : data
     }
 
     // MARK: - posix_spawn 辅助
