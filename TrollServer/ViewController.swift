@@ -7,6 +7,16 @@ import Darwin
 private func WIFEXITED(_ status: Int32) -> Bool { return (status & 0x7f) == 0 }
 private func WEXITSTATUS(_ status: Int32) -> Int32 { return (status >> 8) & 0xff }
 
+// persona-mgmt 私有 API — 用于以 root 身份 spawn 子进程
+@_silgen_name("posix_spawnattr_init") func posix_spawnattr_init(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>) -> Int32
+@_silgen_name("posix_spawnattr_destroy") func posix_spawnattr_destroy(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>) -> Int32
+@_silgen_name("posix_spawnattr_set_persona_np") func posix_spawnattr_set_persona_np(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>, _ persona_id: UInt32, _ flags: UInt32) -> Int32
+@_silgen_name("posix_spawnattr_set_persona_uid_np") func posix_spawnattr_set_persona_uid_np(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>, _ uid: uid_t) -> Int32
+@_silgen_name("posix_spawnattr_set_persona_gid_np") func posix_spawnattr_set_persona_gid_np(_ attr: UnsafeMutablePointer<posix_spawnattr_t?>, _ gid: gid_t) -> Int32
+
+private let POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE: UInt32 = 1
+private let POSIX_SPAWN_PERSONA_ID_ROOT: UInt32 = 99
+
 // ============================================================
 //  主界面控制器
 //  功能：脚本控制按钮 | 下载安装最新脚本 | 实时日志
@@ -761,16 +771,26 @@ class ViewController: UIViewController {
         }
     }
 
+    /// 以 root 权限 spawn 子进程（需要 com.apple.private.persona-mgmt 权限）
     private func spawnAndWait(path: String, args: [String]) -> Int32 {
         // posix_spawn argv 必须以 NULL 结尾
         let cargs = args.map { strdup($0) } + [nil]
         defer { cargs.forEach { free($0) } }
+
+        // 初始化 spawn 属性，设置 persona 为 root
+        var attr: posix_spawnattr_t? = nil
+        posix_spawnattr_init(&attr)
+        posix_spawnattr_set_persona_np(&attr, POSIX_SPAWN_PERSONA_ID_ROOT, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE)
+        posix_spawnattr_set_persona_uid_np(&attr, 0)
+        posix_spawnattr_set_persona_gid_np(&attr, 0)
+        defer { posix_spawnattr_destroy(&attr) }
+
         var pid: pid_t = 0
-        let ret = posix_spawn(&pid, path, nil, nil, cargs, environ)
+        let ret = posix_spawn(&pid, path, nil, &attr, cargs, environ)
         guard ret == 0 else { return ret }
         var status: Int32 = 0
         waitpid(pid, &status, 0)
-        // 返回子进程实际退出码，而非 posix_spawn 的返回值
+        // 返回子进程实际退出码
         if WIFEXITED(status) {
             return WEXITSTATUS(status)
         }
