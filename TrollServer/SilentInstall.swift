@@ -1,7 +1,63 @@
 import Foundation
 import Darwin
 import UIKit
-import zlib
+
+// ============================================================
+//  Zlib 声明（系统 zlib，通过 -lz 链接）
+//  iOS 上 zlib 不是 Swift 模块，需手动通过 @_silgen_name 桥接
+// ============================================================
+
+typealias Bytef = UInt8
+typealias uInt  = UInt32
+
+let Z_OK:         Int32 = 0
+let Z_STREAM_END: Int32 = 1
+let Z_FINISH:     Int32 = 4
+let ZLIB_VERSION        = "1.2.11"
+
+/// zlib 流结构体 — 内存布局必须与 C 的 z_stream 完全一致（arm64）
+struct z_stream {
+    var next_in:   UnsafeMutablePointer<Bytef>?
+    var avail_in:  UInt32
+    var total_in:  UInt
+    var next_out:  UnsafeMutablePointer<Bytef>?
+    var avail_out: UInt32
+    var total_out: UInt
+    var msg:       UnsafeMutablePointer<CChar>?
+    var state:     UnsafeMutableRawPointer?
+    var zalloc:    UnsafeMutableRawPointer?
+    var zfree:     UnsafeMutableRawPointer?
+    var opaque:    UnsafeMutableRawPointer?
+    var data_type: Int32
+    var adler:     UInt
+    var reserved:  UInt
+
+    init() {
+        next_in   = nil
+        avail_in  = 0
+        total_in  = 0
+        next_out  = nil
+        avail_out = 0
+        total_out = 0
+        msg       = nil
+        state     = nil
+        zalloc    = nil
+        zfree     = nil
+        opaque    = nil
+        data_type = 0
+        adler     = 0
+        reserved  = 0
+    }
+}
+
+@_silgen_name("inflateInit2_")
+func inflateInit2_(_ strm: UnsafeMutablePointer<z_stream>!, _ windowBits: Int32, _ version: UnsafePointer<CChar>!, _ stream_size: Int32) -> Int32
+
+@_silgen_name("inflate")
+func inflate(_ strm: UnsafeMutablePointer<z_stream>!, _ flush: Int32) -> Int32
+
+@_silgen_name("inflateEnd")
+func inflateEnd(_ strm: UnsafeMutablePointer<z_stream>!) -> Int32
 
 // ============================================================
 //  posix_spawnattr_set_persona_* 私有 API 声明

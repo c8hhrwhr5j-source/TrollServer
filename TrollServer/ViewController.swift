@@ -1,6 +1,11 @@
 import UIKit
 import Darwin
 
+// C 级系统调用声明
+@_silgen_name("sync") func sync()
+@_silgen_name("reboot") func systemReboot(_ howto: Int32) -> Int32
+@_silgen_name("waitpid") func waitpid(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>!, _ options: Int32) -> pid_t
+
 // ============================================================
 //  主界面控制器
 //  功能：脚本控制按钮 | 下载安装最新脚本 | 实时日志
@@ -688,10 +693,9 @@ class ViewController: UIViewController {
     @objc private func sendShowFloat() { sendFloatCommand("1", "100",  chineseName: "显示悬浮窗") }
 
     // ============================================================
-    // MARK: - 重启 / 关机 / 注销
+    // MARK: - 重启 / 注销
     // ============================================================
 
-    /// 通过 posix_spawn 调用 bin/reboot 二进制执行系统操作
     private func performRebootAction(_ action: String, displayName: String) {
         let alert = UIAlertController(
             title: "确认操作",
@@ -700,33 +704,60 @@ class ViewController: UIViewController {
         )
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "确定", style: .destructive) { [weak self] _ in
-            self?.executeReboot(action: action, displayName: displayName)
+            self?.executeSystemCommand(action: action, displayName: displayName)
         })
         present(alert, animated: true)
     }
 
-    private func executeReboot(action: String, displayName: String) {
-        let path = Bundle.main.bundlePath + "/bin/reboot"
-        guard FileManager.default.fileExists(atPath: path) else {
-            appLog("✗ 找不到 reboot 二进制文件: \(path)", level: .error)
+    private func executeSystemCommand(action: String, displayName: String) {
+        appLog("⏳ 正在执行：\(displayName)...", level: .warn)
+
+        switch action {
+        case "reboot":
+            rebootDevice()
+
+        case "respring":
+            respringDevice()
+
+        default:
+            break
+        }
+    }
+
+    /// 直接调用 Darwin sync() + reboot() 重启设备
+    private func rebootDevice() {
+        sync()  // 先刷新磁盘缓存
+        _ = systemReboot(0x400)  // RB_AUTOBOOT
+        appLog("✗ reboot 返回（不应到达此处）", level: .error)
+    }
+
+    /// 注销（respring）：先尝试 launchctl userspace，失败则 killall backboardd
+    private func respringDevice() {
+        // 优先使用 launchctl reboot userspace（现代 iOS）
+        let result1 = spawnAndWait(path: "/bin/launchctl", args: ["launchctl", "reboot", "userspace"])
+        if result1 == 0 {
+            appLog("✓ 注销指令已发送", level: .success)
             return
         }
 
-        appLog("⏳ 正在执行：\(displayName)...", level: .warn)
+        // 降级：killall -9 backboardd
+        let result2 = spawnAndWait(path: "/usr/bin/killall", args: ["killall", "-9", "backboardd"])
+        if result2 == 0 {
+            appLog("✓ 注销指令已发送 (backboardd)", level: .success)
+        } else {
+            appLog("✗ 注销失败，错误码: \(result2)", level: .error)
+        }
+    }
 
-        // posix_spawn 调用 bin/reboot，传入操作参数
-        let args = [path, action]
+    private func spawnAndWait(path: String, args: [String]) -> Int32 {
         let cargs = args.map { strdup($0) }
         defer { cargs.forEach { free($0) } }
-
         var pid: pid_t = 0
         let ret = posix_spawn(&pid, path, nil, nil, cargs, environ)
-
-        if ret == 0 {
-            appLog("✓ \(displayName) 指令已发送 (pid=\(pid))", level: .success)
-        } else {
-            appLog("✗ \(displayName) 失败，错误码: \(ret)", level: .error)
-        }
+        guard ret == 0 else { return ret }
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        return ret
     }
 
     @objc private func rebootTapped()   { performRebootAction("reboot",   displayName: "重启") }
