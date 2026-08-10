@@ -247,14 +247,7 @@ class ViewController: UIViewController {
         let systemRow = makeButtonRow([rebootBtn, shutdownBtn])
 
         // ---- 下载应用按钮 ----
-        let downloadLabel: UILabel = {
-            let l = UILabel()
-            l.text = "下载安装最新应用脚本【安装完成一定要重启一次设备】"
-            l.font = UIFont.boldSystemFont(ofSize: 13)
-            l.textColor = .systemRed
-            l.translatesAutoresizingMaskIntoConstraints = false
-            return l
-        }()
+        let downloadLabel = makeSectionLabel("下载安装最新应用脚本")
         setupButton(downloadBtn, title: "下载应用", color: .systemBlue,  action: #selector(confirmDownloadLatestAppScript))
         setupButton(installAppBtn, title: "安装应用", color: .systemGreen, action: #selector(installAppTapped))
 
