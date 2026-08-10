@@ -496,7 +496,9 @@ class ViewController: UIViewController {
 
     private func getDeviceSerial() -> String {
         typealias MGCopyAnswerFunc = @convention(c) (CFString) -> Unmanaged<CFTypeRef>?
-        if let sym = dlsym(RTLD_DEFAULT, "MGCopyAnswer") {
+        // RTLD_DEFAULT = ((void *) -2)，Swift 中无法直接使用该宏，传入 UnsafeMutableRawPointer(bitPattern: 0xFFFFFFFFFFFFFFFE) 等效
+        let handle = UnsafeMutableRawPointer(bitPattern: UInt(bitPattern: -2))
+        if let sym = dlsym(handle, "MGCopyAnswer") {
             let f = unsafeBitCast(sym, to: MGCopyAnswerFunc.self)
             if let result = f("SerialNumber" as CFString)?.takeRetainedValue() as? String {
                 return result
