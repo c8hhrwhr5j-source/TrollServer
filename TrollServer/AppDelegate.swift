@@ -26,7 +26,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
-        backgroundTask = application.beginBackgroundTask(withName: "TrollServer.keepalive") { [weak self] in
+        backgroundTask = application.beginBackgroundTask(withName: "WuYouFZ.keepalive") { [weak self] in
             guard let self = self else { return }
             if self.backgroundTask != .invalid {
                 application.endBackgroundTask(self.backgroundTask)

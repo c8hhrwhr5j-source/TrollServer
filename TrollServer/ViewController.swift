@@ -8,7 +8,7 @@ import UIKit
 // 日志缓冲区（支持 AccessoryKit 样式）
 private let sharedLogBuffer = NSMutableAttributedString()
 /// 串行写队列，防止多线程竞争崩溃
-private let logWriteQueue = DispatchQueue(label: "com.trollserver.log", qos: .userInitiated)
+private let logWriteQueue = DispatchQueue(label: "com.wuyoufz.log", qos: .userInitiated)
 /// 时间格式化器复用，避免每次 appLog 都新建
 private let logFmt: DateFormatter = {
     let f = DateFormatter()
@@ -17,13 +17,16 @@ private let logFmt: DateFormatter = {
 }()
 private var logUpdateHandler: (() -> Void)?
 
-class ViewController: UIViewController {
+class ViewController: UIViewController, UIDocumentPickerDelegate {
 
     private let serverRunner: DaemonServerRunner
 
     // 状态
     private let ipAddressLabel = UILabel()
-    private let installStatusLabel = UILabel()
+    private let modelLabel = UILabel()
+    private let memoryLabel = UILabel()
+    private let serialLabel = UILabel()
+    private let sysVersionLabel = UILabel()
 
     private var refreshTimer: Timer?
 
@@ -37,6 +40,7 @@ class ViewController: UIViewController {
 
     // 下载安装
     private let downloadBtn = UIButton(type: .system)
+    private let installAppBtn = UIButton(type: .system)
     private let progressLabel = UILabel()
 
     // 日志区域
@@ -128,17 +132,10 @@ class ViewController: UIViewController {
         view.backgroundColor = UIColor.systemGroupedBackground
 
         let titleLabel = UILabel()
-        titleLabel.text = "TrollServer"
+        titleLabel.text = "无忧辅助控制"
         titleLabel.font = UIFont.boldSystemFont(ofSize: 28)
         titleLabel.textAlignment = .center
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let subtitleLabel = UILabel()
-        subtitleLabel.text = "无忧辅助控制"
-        subtitleLabel.font = UIFont.systemFont(ofSize: 14)
-        subtitleLabel.textColor = .secondaryLabel
-        subtitleLabel.textAlignment = .center
-        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         // ---- 状态卡片 ----
         let statusCard = UIView()
@@ -146,14 +143,25 @@ class ViewController: UIViewController {
         statusCard.layer.cornerRadius = 12
         statusCard.translatesAutoresizingMaskIntoConstraints = false
 
-        ipAddressLabel.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        // 设备信息标签样式
+        func makeStatusLabel() -> UILabel {
+            let l = UILabel()
+            l.font = UIFont.systemFont(ofSize: 12, weight: .regular)
+            l.textColor = .label
+            l.numberOfLines = 1
+            return l
+        }
+        modelLabel = makeStatusLabel()
+        memoryLabel = makeStatusLabel()
+        serialLabel = makeStatusLabel()
+        ipAddressLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
         ipAddressLabel.textColor = .systemBlue
-        installStatusLabel.font = UIFont.systemFont(ofSize: 13)
-        installStatusLabel.numberOfLines = 2
+        ipAddressLabel.numberOfLines = 1
+        sysVersionLabel = makeStatusLabel()
 
-        let statusStack = UIStackView(arrangedSubviews: [ipAddressLabel, installStatusLabel])
+        let statusStack = UIStackView(arrangedSubviews: [modelLabel, memoryLabel, serialLabel, ipAddressLabel, sysVersionLabel])
         statusStack.axis = .vertical
-        statusStack.spacing = 6
+        statusStack.spacing = 4
         statusStack.translatesAutoresizingMaskIntoConstraints = false
         statusCard.addSubview(statusStack)
 
@@ -176,7 +184,10 @@ class ViewController: UIViewController {
 
         // ---- 下载应用按钮 ----
         let downloadLabel = makeSectionLabel("下载最新应用脚本")
-        setupButton(downloadBtn, title: "下载最新应用脚本", color: .systemRed, action: #selector(confirmDownloadLatestAppScript))
+        setupButton(downloadBtn, title: "下载应用", color: .systemRed, action: #selector(confirmDownloadLatestAppScript))
+        setupButton(installAppBtn, title: "安装应用", color: .systemBlue, action: #selector(installAppTapped))
+
+        let downloadRow = makeButtonRow([downloadBtn, installAppBtn])
 
         progressLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         progressLabel.textColor = .secondaryLabel
@@ -203,7 +214,6 @@ class ViewController: UIViewController {
         contentView.translatesAutoresizingMaskIntoConstraints = false
 
         contentView.addSubview(titleLabel)
-        contentView.addSubview(subtitleLabel)
         contentView.addSubview(statusCard)
         contentView.addSubview(taskLabel)
         contentView.addSubview(taskRow1)
@@ -211,7 +221,7 @@ class ViewController: UIViewController {
         contentView.addSubview(floatLabel)
         contentView.addSubview(floatRow)
         contentView.addSubview(downloadLabel)
-        contentView.addSubview(downloadBtn)
+        contentView.addSubview(downloadRow)
         contentView.addSubview(progressLabel)
         contentView.addSubview(logLabel)
         contentView.addSubview(logTextView)
@@ -238,11 +248,9 @@ class ViewController: UIViewController {
             // 标题
             titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 40),
             titleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 4),
-            subtitleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
 
             // 状态卡片
-            statusCard.topAnchor.constraint(equalTo: subtitleLabel.bottomAnchor, constant: 16),
+            statusCard.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
             statusCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             statusCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             statusStack.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 14),
@@ -270,11 +278,11 @@ class ViewController: UIViewController {
             // 下载应用
             downloadLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 20),
             downloadLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            downloadBtn.topAnchor.constraint(equalTo: downloadLabel.bottomAnchor, constant: 8),
-            downloadBtn.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            downloadBtn.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            downloadRow.topAnchor.constraint(equalTo: downloadLabel.bottomAnchor, constant: 8),
+            downloadRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            downloadRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
-            progressLabel.topAnchor.constraint(equalTo: downloadBtn.bottomAnchor, constant: 6),
+            progressLabel.topAnchor.constraint(equalTo: downloadRow.bottomAnchor, constant: 6),
             progressLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             progressLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
@@ -341,29 +349,51 @@ class ViewController: UIViewController {
     private func updateStatus() {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let iStatus = self.serverRunner.installAPI?.getStatus()
-            let iRunning = iStatus?.running ?? false
-            let helper = iStatus?.helper ?? "none"
-            let icon = iRunning ? "●" : "○"
+            let model = self.getDeviceModel()
+            let memory = self.getDeviceMemory()
+            let serial = self.getDeviceSerial()
+            let sysVer = UIDevice.current.systemVersion
+            let ip = self.getWiFiIP() ?? "未连接"
 
             DispatchQueue.main.async {
-                let attr = NSMutableAttributedString()
-                attr.append(NSAttributedString(
-                    string: "\(icon) IPA安装API  helper: \(helper)",
-                    attributes: [
-                        .font: UIFont.systemFont(ofSize: 13),
-                        .foregroundColor: iRunning ? UIColor.systemGreen : UIColor.systemRed
-                    ]
-                ))
-                self.installStatusLabel.attributedText = attr
-
-                if let ip = self.getWiFiIP() {
-                    self.ipAddressLabel.text = "\u{1F4F6} \(ip)"
-                } else {
-                    self.ipAddressLabel.text = "\u{26A0}\u{FE0F} 未连接 WiFi"
-                }
+                self.modelLabel.text     = "📱 机型: \(model)"
+                self.memoryLabel.text    = "💾 内存: \(memory)"
+                self.serialLabel.text    = "🔑 序列号: \(serial)"
+                self.ipAddressLabel.text = "📶 IP: \(ip)"
+                self.sysVersionLabel.text = "⚙️ 系统: iOS \(sysVer)"
             }
         }
+    }
+
+    private func getDeviceModel() -> String {
+        var sysInfo = utsname()
+        uname(&sysInfo)
+        let machine = withUnsafePointer(to: &sysInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) {
+                String(cString: $0)
+            }
+        }
+        return machine
+    }
+
+    private func getDeviceMemory() -> String {
+        let bytes = ProcessInfo.processInfo.physicalMemory
+        if bytes >= 1024 * 1024 * 1024 {
+            return String(format: "%.1f GB", Double(bytes) / 1_073_741_824.0)
+        } else {
+            return String(format: "%.0f MB", Double(bytes) / 1_048_576.0)
+        }
+    }
+
+    private func getDeviceSerial() -> String {
+        typealias MGCopyAnswerFunc = @convention(c) (CFString) -> Unmanaged<CFTypeRef>?
+        if let sym = dlsym(RTLD_DEFAULT, "MGCopyAnswer") {
+            let f = unsafeBitCast(sym, to: MGCopyAnswerFunc.self)
+            if let result = f("SerialNumber" as CFString)?.takeRetainedValue() as? String {
+                return result
+            }
+        }
+        return "不可用"
     }
 
     // ============================================================
@@ -572,7 +602,46 @@ class ViewController: UIViewController {
 
     private func resetDownloadBtn() {
         downloadBtn.isEnabled = true
-        downloadBtn.setTitle("下载最新应用脚本", for: .normal)
+        downloadBtn.setTitle("下载应用", for: .normal)
+    }
+
+    // ============================================================
+    // MARK: - 安装已下载的应用
+    // ============================================================
+
+    @objc private func installAppTapped() {
+        let docsDir = "/var/mobile/Documents"
+        let ipaFiles = scanIPAFiles(in: docsDir)
+
+        if ipaFiles.isEmpty {
+            let alert = UIAlertController(
+                title: "提示",
+                message: "您还没有下载应用，请先下载",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "确定", style: .default))
+            present(alert, animated: true)
+            return
+        }
+
+        // 弹出系统文件选择器
+        let docPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.init(filenameExtension: "ipa")!])
+        docPicker.allowsMultipleSelection = false
+        docPicker.delegate = self
+
+        if let popover = docPicker.popoverPresentationController {
+            popover.sourceView = self.view
+            popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+        }
+
+        present(docPicker, animated: true)
+    }
+
+    private func scanIPAFiles(in directory: String) -> [String] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
+            return []
+        }
+        return contents.filter { $0.lowercased().hasSuffix(".ipa") }
     }
 
     // ============================================================
@@ -599,6 +668,41 @@ class ViewController: UIViewController {
             ptr = ptr!.pointee.ifa_next
         }
         return nil
+    }
+
+    // ============================================================
+    // MARK: - UIDocumentPickerDelegate
+    // ============================================================
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let pickedURL = urls.first else { return }
+
+        // 确保文件可访问
+        let accessing = pickedURL.startAccessingSecurityScopedResource()
+        defer { if accessing { pickedURL.stopAccessingSecurityScopedResource() } }
+
+        // 弹出分享面板安装
+        let activityVC = UIActivityViewController(activityItems: [pickedURL], applicationActivities: nil)
+
+        if let popover = activityVC.popoverPresentationController {
+            popover.sourceView = self.view
+            popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+        }
+
+        activityVC.completionWithItemsHandler = { [weak self] _, completed, _, _ in
+            guard let self = self else { return }
+            if completed {
+                self.appLog("✓ 已通过外部应用打开 IPA", level: .success)
+            } else {
+                self.appLog("⚠ 已取消分享", level: .warn)
+            }
+        }
+
+        present(activityVC, animated: true)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        appLog("⚠ 已取消文件选择", level: .warn)
     }
 }
 

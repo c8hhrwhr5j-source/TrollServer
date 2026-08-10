@@ -14,24 +14,24 @@ class DaemonServerRunner: NSObject {
         scriptServer = ScriptControlServer(port: 8989)
         do {
             try scriptServer?.start()
-            print("[TrollServer] 脚本控制服务已启动")
+            print("[无忧辅助控制] 脚本控制服务已启动")
         } catch {
-            print("[TrollServer] 脚本控制服务启动失败: \(error)")
+            print("[无忧辅助控制] 脚本控制服务启动失败: \(error)")
         }
 
         // IPA 安装 API 服务器
         installAPI = InstallAPI(port: 8081)
         do {
             try installAPI?.start()
-            print("[TrollServer] IPA 安装服务已启动")
+            print("[无忧辅助控制] IPA 安装服务已启动")
         } catch {
-            print("[TrollServer] IPA 安装服务启动失败: \(error)")
+            print("[无忧辅助控制] IPA 安装服务启动失败: \(error)")
         }
     }
 
     func stop() {
         scriptServer?.stop()
         installAPI?.stop()
-        print("[TrollServer] Servers stopped")
+        print("[无忧辅助控制] Servers stopped")
     }
 }
