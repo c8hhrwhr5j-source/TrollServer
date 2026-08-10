@@ -141,7 +141,7 @@ class ViewController: UIViewController {
 
         let cardTitle = UILabel()
         cardTitle.text = "设备信息"
-        cardTitle.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        cardTitle.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
         cardTitle.textColor = .label
         cardTitle.translatesAutoresizingMaskIntoConstraints = false
         statusCard.addSubview(cardTitle)
@@ -156,12 +156,12 @@ class ViewController: UIViewController {
 
             let kLabel = UILabel()
             kLabel.text = key
-            kLabel.font = UIFont.systemFont(ofSize: 14, weight: .regular)
+            kLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
             kLabel.textColor = .label
             kLabel.translatesAutoresizingMaskIntoConstraints = false
 
             let vLabel = UILabel()
-            vLabel.font = UIFont.systemFont(ofSize: 14, weight: .regular)
+            vLabel.font = UIFont.systemFont(ofSize: 13, weight: .regular)
             vLabel.textColor = .secondaryLabel
             vLabel.textAlignment = .right
             vLabel.numberOfLines = 1
@@ -176,7 +176,7 @@ class ViewController: UIViewController {
                 vLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
                 vLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
                 vLabel.leadingAnchor.constraint(greaterThanOrEqualTo: kLabel.trailingAnchor, constant: 12),
-                container.heightAnchor.constraint(equalToConstant: 38)
+                container.heightAnchor.constraint(equalToConstant: 28)
             ])
 
             // 分隔线（最后一行不加）
@@ -268,7 +268,7 @@ class ViewController: UIViewController {
         view.addSubview(scrollView)
 
         // 日志框最小高度
-        let logHeight = logTextView.heightAnchor.constraint(equalToConstant: 160)
+        let logHeight = logTextView.heightAnchor.constraint(equalToConstant: 120)
         logHeight.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
@@ -284,57 +284,57 @@ class ViewController: UIViewController {
             contentView.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
 
             // 标题
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 40),
+            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
             titleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
 
             // 状态卡片
-            statusCard.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            statusCard.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 12),
             statusCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             statusCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            cardTitle.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 14),
+            cardTitle.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 10),
             cardTitle.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
             cardTitle.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
-            statusStack.topAnchor.constraint(equalTo: cardTitle.bottomAnchor, constant: 10),
+            statusStack.topAnchor.constraint(equalTo: cardTitle.bottomAnchor, constant: 6),
             statusStack.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
             statusStack.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
-            statusStack.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: -14),
+            statusStack.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: -10),
 
             // 任务控制
-            taskLabel.topAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: 20),
+            taskLabel.topAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: 14),
             taskLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            taskRow1.topAnchor.constraint(equalTo: taskLabel.bottomAnchor, constant: 8),
+            taskRow1.topAnchor.constraint(equalTo: taskLabel.bottomAnchor, constant: 6),
             taskRow1.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             taskRow1.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            taskRow2.topAnchor.constraint(equalTo: taskRow1.bottomAnchor, constant: 10),
+            taskRow2.topAnchor.constraint(equalTo: taskRow1.bottomAnchor, constant: 8),
             taskRow2.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             taskRow2.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
             // 悬浮窗
-            floatLabel.topAnchor.constraint(equalTo: taskRow2.bottomAnchor, constant: 18),
+            floatLabel.topAnchor.constraint(equalTo: taskRow2.bottomAnchor, constant: 14),
             floatLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            floatRow.topAnchor.constraint(equalTo: floatLabel.bottomAnchor, constant: 8),
+            floatRow.topAnchor.constraint(equalTo: floatLabel.bottomAnchor, constant: 6),
             floatRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             floatRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
             // 下载应用
-            downloadLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 20),
+            downloadLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 14),
             downloadLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            downloadRow.topAnchor.constraint(equalTo: downloadLabel.bottomAnchor, constant: 8),
+            downloadRow.topAnchor.constraint(equalTo: downloadLabel.bottomAnchor, constant: 6),
             downloadRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             downloadRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
-            progressLabel.topAnchor.constraint(equalTo: downloadRow.bottomAnchor, constant: 6),
+            progressLabel.topAnchor.constraint(equalTo: downloadRow.bottomAnchor, constant: 4),
             progressLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             progressLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
             // 日志
-            logLabel.topAnchor.constraint(equalTo: progressLabel.bottomAnchor, constant: 18),
+            logLabel.topAnchor.constraint(equalTo: progressLabel.bottomAnchor, constant: 14),
             logLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            logTextView.topAnchor.constraint(equalTo: logLabel.bottomAnchor, constant: 8),
+            logTextView.topAnchor.constraint(equalTo: logLabel.bottomAnchor, constant: 6),
             logTextView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             logTextView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             logHeight,
-            logTextView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -30),
+            logTextView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
         ])
     }
 
