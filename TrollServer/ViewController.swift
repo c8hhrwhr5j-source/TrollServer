@@ -133,7 +133,7 @@ class ViewController: UIViewController {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         let subtitleLabel = UILabel()
-        subtitleLabel.text = "脚本控制 + IPA 安装"
+        subtitleLabel.text = "无忧辅助控制"
         subtitleLabel.font = UIFont.systemFont(ofSize: 14)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.textAlignment = .center
@@ -497,31 +497,33 @@ class ViewController: UIViewController {
         appLog("✓ 下载完成: \(sizeStr)", level: .success)
         progressLabel.text = "下载完成: \(sizeStr)"
 
-        // 开始静默安装（带进度）
-        appLog("正在静默安装最新程序...", level: .progress)
-        progressLabel.text = "正在安装..."
+        // 弹出分享面板，让用户手动选择应用安装 IPA
+        appLog("下载完成，请选择应用打开 IPA 安装包", level: .info)
+        progressLabel.text = "请选择巨魔或其他应用进行安装"
 
-        self.serverRunner.installAPI?.installFromLocalPath(
-            destPath,
-            progress: { [weak self] phase, detail, percent in
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let fileURL = URL(fileURLWithPath: destPath)
+            let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
+
+            // iPad 上需要设置 sourceView 避免崩溃
+            if let popover = activityVC.popoverPresentationController {
+                popover.sourceView = self.view
+                popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+            }
+
+            activityVC.completionWithItemsHandler = { [weak self] _, completed, _, _ in
                 guard let self = self else { return }
-                self.progressLabel.text = "[\(percent)%] \(detail)"
-                if percent % 25 == 0 {
-                    self.appLog("[\(phase)] \(detail)", level: .progress)
-                }
-            },
-            completion: { [weak self] success, message in
-                guard let self = self else { return }
-                if success {
-                    self.appLog("✓ 安装成功: \(message)", level: .success)
-                    self.progressLabel.text = "安装完成"
+                if completed {
+                    self.appLog("✓ 已通过外部应用打开 IPA", level: .success)
                 } else {
-                    self.appLog("✗ 安装失败: \(message)", level: .error)
-                    self.progressLabel.text = "安装失败"
+                    self.appLog("⚠ 已取消分享", level: .warn)
                 }
                 self.resetDownloadBtn()
             }
-        )
+
+            self.present(activityVC, animated: true)
+        }
     }
 
     /// 主地址失败时尝试备用地址
