@@ -740,13 +740,10 @@ class ViewController: UIViewController {
         return Bundle.main.bundlePath + "/bin/" + name
     }
 
-    /// 重启：通过 bundled launchctl reboot 执行完全重启（不依赖 libjailbreak.dylib）
+    /// 重启：通过 bundled reboot_helper 直接调 reboot() syscall（不依赖 libjailbreak.dylib）
     private func rebootDevice() {
-        let launchctlBin = binPath("launchctl")
-        let result = spawnAndWait(path: launchctlBin, args: ["launchctl", "reboot"])
-        if result != 0 {
-            appLog("✗ reboot 失败，错误码: \(result)", level: .error)
-        }
+        let helperBin = binPath("reboot_helper")
+        _ = spawnAndWait(path: helperBin, args: ["reboot_helper"])
     }
 
     /// 注销（respring）：先尝试 bundle 内的 launchctl userspace，失败则 killall backboardd

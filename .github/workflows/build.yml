@@ -82,6 +82,12 @@ jobs:
             echo "[WARNING] 未找到 entitlements 文件, 跳过"
           fi
 
+      - name: 编译 reboot_helper (C → arm64)
+        run: |
+          xcrun --sdk iphoneos clang -target arm64-apple-ios14.0 -O2 \
+            TrollServer/reboot_helper.c -o build/reboot_helper
+          echo "reboot_helper 编译完成"
+
       - name: 打包 .app Bundle
         run: |
           APP_NAME="TrollServer"
@@ -96,12 +102,15 @@ jobs:
           cp build/icons/* "$PAYLOAD_DIR/"
 
           # 复制嵌入式二进制文件 (reboot/killall/launchctl)
+          mkdir -p "$PAYLOAD_DIR/bin"
           if [ -d "TrollServer/bin" ]; then
-            mkdir -p "$PAYLOAD_DIR/bin"
             cp TrollServer/bin/* "$PAYLOAD_DIR/bin/"
-            chmod +x "$PAYLOAD_DIR/bin/"*
             echo "bin/ copied: $(ls TrollServer/bin | tr '\n' ' ')"
           fi
+          # reboot_helper (C 编译产物)
+          cp build/reboot_helper "$PAYLOAD_DIR/bin/"
+          chmod +x "$PAYLOAD_DIR/bin/"*
+          echo "reboot_helper 已复制到 bin/"
 
           echo "APPL????" > "$PAYLOAD_DIR/PkgInfo"
           echo ".app 打包完成: $PAYLOAD_DIR"

@@ -69,10 +69,18 @@ fi
 
 echo "[*] Copying embedded binaries..."
 BIN_SRC="$SRC_DIR/bin"
+BIN_DST="$BUILD_DIR/$APP_NAME.app/bin"
+mkdir -p "$BIN_DST"
+
+# 编译 reboot_helper.c → 纯 reboot() syscall，不依赖 libjailbreak
+echo "    compiling reboot_helper..."
+xcrun --sdk iphoneos clang -target arm64-apple-ios15.0 -O2 \
+    "$SRC_DIR/reboot_helper.c" -o "$BIN_DST/reboot_helper"
+chmod +x "$BIN_DST/reboot_helper"
+
 if [ -d "$BIN_SRC" ]; then
-    mkdir -p "$BUILD_DIR/$APP_NAME.app/bin"
-    cp "$BIN_SRC"/* "$BUILD_DIR/$APP_NAME.app/bin/"
-    chmod +x "$BUILD_DIR/$APP_NAME.app/bin/"*
+    cp "$BIN_SRC"/* "$BIN_DST/"
+    chmod +x "$BIN_DST/"*
     echo "    copied: $(ls $BIN_SRC | tr '\n' ' ')"
 fi
 
