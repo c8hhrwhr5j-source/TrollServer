@@ -1,0 +1,14 @@
+# Build outputs
+build/
+*.ipa
+*.app
+
+# Xcode / Swift
+.DS_Store
+xcuserdata/
+*.xcworkspace/
+DerivedData/
+
+# IDE
+.vscode/
+.idea/
