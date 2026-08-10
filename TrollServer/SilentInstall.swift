@@ -754,7 +754,7 @@ class SilentInstall {
     // MARK: - ═══ 安装策略4: 文件复制到检测目录 ═══
     // ============================================================
 
-    private static func installViaFileCopy(ipaPath: String) -> (Bool, String) {
+    private static func installViaFileCopy(_ ipaPath: String) -> (Bool, String) {
         let tsTargets = [
             "/var/mobile/.TrollStore/tmp/",
             "/var/mobile/Library/Caches/TrollStore/",
@@ -898,9 +898,9 @@ class SilentInstall {
         let uid: uid_t = 0
         let gid: gid_t = 0
 
-        withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
-        withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
-        withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
+        _ = withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
+        _ = withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
+        _ = withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
 
         let cargs = arguments.map { strdup($0) }
         defer { cargs.forEach { free($0) } }
@@ -938,9 +938,9 @@ class SilentInstall {
         let personaFlags: UInt32 = 1
         let uid: uid_t = 0
         let gid: gid_t = 0
-        withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
-        withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
-        withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
+        _ = withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
+        _ = withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
+        _ = withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
 
         let cargs = arguments.map { strdup($0) }
         defer {
