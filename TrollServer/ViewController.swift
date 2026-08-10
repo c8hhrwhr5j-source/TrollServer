@@ -229,7 +229,7 @@ class ViewController: UIViewController {
         setupButton(startBtn, title: "启动脚本", color: .systemGreen,  action: #selector(sendStart))
         setupButton(stopBtn,  title: "停止脚本", color: .systemRed,    action: #selector(sendStop))
         setupButton(pauseBtn, title: "暂停脚本", color: .systemOrange, action: #selector(sendPause))
-        setupButton(resumeBtn,title: "恢复脚本", color: .systemBlue,   action: #selector(sendResume))
+        setupButton(resumeBtn,title: "恢复脚本", color: .systemTeal,   action: #selector(sendResume))
 
         let taskRow1 = makeButtonRow([startBtn, stopBtn])
         let taskRow2 = makeButtonRow([pauseBtn, resumeBtn])
@@ -237,19 +237,19 @@ class ViewController: UIViewController {
         // ---- 悬浮窗按钮 ----
         let floatLabel = makeSectionLabel("悬浮球控制")
         setupButton(hideFloatBtn, title: "隐藏悬浮", color: .systemGray, action: #selector(sendHideFloat))
-        setupButton(showFloatBtn, title: "显示悬浮", color: .systemBlue, action: #selector(sendShowFloat))
+        setupButton(showFloatBtn, title: "显示悬浮", color: .systemIndigo, action: #selector(sendShowFloat))
         let floatRow = makeButtonRow([hideFloatBtn, showFloatBtn])
 
         // ---- 重启 / 关机 ----
         let systemLabel = makeSectionLabel("设备电源控制")
-        setupButton(rebootBtn,   title: "重启设备", color: UIColor(red: 0.9, green: 0.45, blue: 0.0, alpha: 1.0), action: #selector(rebootTapped))
-        setupButton(shutdownBtn, title: "关闭设备", color: UIColor(red: 0.3, green: 0.3, blue: 0.8, alpha: 1.0), action: #selector(shutdownTapped))
+        setupButton(rebootBtn,   title: "重启设备", color: .systemOrange, action: #selector(rebootTapped))
+        setupButton(shutdownBtn, title: "关闭设备", color: .systemRed,    action: #selector(shutdownTapped))
         let systemRow = makeButtonRow([rebootBtn, shutdownBtn])
 
         // ---- 下载应用按钮 ----
         let downloadLabel = makeSectionLabel("下载安装最新应用脚本")
-        setupButton(downloadBtn, title: "下载应用", color: .systemRed, action: #selector(confirmDownloadLatestAppScript))
-        setupButton(installAppBtn, title: "安装应用", color: .systemBlue, action: #selector(installAppTapped))
+        setupButton(downloadBtn, title: "下载应用", color: .systemBlue,  action: #selector(confirmDownloadLatestAppScript))
+        setupButton(installAppBtn, title: "安装应用", color: .systemGreen, action: #selector(installAppTapped))
 
         let downloadRow = makeButtonRow([downloadBtn, installAppBtn])
 
@@ -801,9 +801,6 @@ class ViewController: UIViewController {
         }
         return -1 // 子进程异常终止
     }
-
-    @objc private func rebootTapped()   { performRebootAction("reboot",   displayName: "重启") }
-    @objc private func respringTapped() { performRebootAction("respring", displayName: "注销") }
 
     // ============================================================
     // MARK: - 下载 + 安装最新应用脚本
