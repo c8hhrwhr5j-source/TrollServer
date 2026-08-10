@@ -124,3 +124,54 @@ private func shutdownDevice() {
 | `build.sh` | 恢复 reboot_helper 编译步骤 |
 | `.github/workflows/build.yml` | 恢复 reboot_helper 编译步骤 |
 | `TrollServer.entitlements` | 保持 `com.apple.frontboard.shutdown` |
+
+## 方案 8：reboot_helper + kill(1, SIGKILL) — ⏳ 待验证
+
+**思路转变**：既然所有 `reboot()` 调用（无论 `0` 还是 `0x400`）在 TrollStore 下都被 AMFI 拦截变成关机，那就不走 reboot 正规路径，而是用旁路攻击。
+
+**原理**：
+```
+kill(1, SIGKILL) → launchd (PID 1) 被杀死 → XNU 内核 panic("init died") → 强制重启
+```
+
+- `kill(1, SIGKILL)` 不需要 `com.apple.system.reboot` entitlement
+- 只是发送一个信号，persona root 足以完成
+- PID 1 (launchd) 在 Unix/XNU 中具有特殊地位，一旦退出内核必然 panic
+- 内核 panic 自然会触发设备完整重启
+
+**代码**：
+```c
+// reboot_helper.c
+#include <signal.h>
+#include <unistd.h>
+
+int main(int argc, char *argv[]) {
+    sync();
+    kill(1, SIGKILL);   // 杀死 launchd → 内核 panic → 真正重启
+    return 1;           // 若返回说明失败
+}
+```
+
+**为什么可能成功**：
+- 完全绕过了 AMFI 的 entitlement 检查链
+- 不需要任何特殊 entitlement，只需 root（persona-mgmt 已提供）
+- 这是巨魔社区广为人知的技巧（非越狱环境下重启设备的经典方法）
+- kill(1, SIGKILL) 制造的是内核 panic，而非正常重启流程，不存在权限检查点
+
+**为什么方案 1-7 都失败了**：
+```
+reboot() syscall → AMFI 检查 com.apple.system.reboot → ldid 伪签名不通过 → 静默拒绝或降级为关机
+kill(1, SIGKILL) → 无 entitlement 检查 → launchd 死亡 → 内核 panic → 强制重启 ✓
+```
+
+**验证要点**：
+- 设备应自动黑屏后显示 Apple logo（真正的重启）
+- 而非停留在黑屏状态（关机）
+- 重启后设备应自动回到锁定屏幕
+
+### 当前改动（方案 8）
+| 文件 | 改动 |
+|------|------|
+| `reboot_helper.c` | `reboot(0)` → `kill(1, SIGKILL)`，添加 `#include <signal.h>` |
+| `ViewController.swift` | 暂时保留"关机" UI 文字，待验证后再改回"重启" |
+| `REBOOT_JOURNAL.md` | 新增方案 8 记录 |
