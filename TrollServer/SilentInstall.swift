@@ -934,7 +934,7 @@ class SilentInstall {
         _ = posix_spawnattr_set_persona_uid_np(&attrs, 0)
         _ = posix_spawnattr_set_persona_gid_np(&attrs, 0)
 
-        let cargs = arguments.map { strdup($0) } + [nil]
+        var cargs = arguments.map { strdup($0) } + [nil]
         defer { cargs.forEach { free($0) } }
 
         var pid: pid_t = 0
@@ -969,7 +969,7 @@ class SilentInstall {
         _ = posix_spawnattr_set_persona_uid_np(&attrs, 0)
         _ = posix_spawnattr_set_persona_gid_np(&attrs, 0)
 
-        let cargs = arguments.map { strdup($0) } + [nil]
+        var cargs = arguments.map { strdup($0) } + [nil]
         defer {
             cargs.forEach { free($0) }
             _ = posix_spawn_file_actions_destroy(&fileActions)
