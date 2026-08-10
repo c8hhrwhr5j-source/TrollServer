@@ -19,13 +19,13 @@ jobs:
           rm -rf "$ICON_OUT"
           mkdir -p "$ICON_OUT"
 
-          # iPhone 主屏幕图标 (Info.plist 中 CFBundleIconFiles)
-          sips -z 120 120 "$ICON_SRC" --out "$ICON_OUT/icon-120.png"
-          sips -z 180 180 "$ICON_SRC" --out "$ICON_OUT/icon-180.png"
+          # iPhone 主屏幕图标 (Info.plist 中 CFBundleIconFiles = AppIcon60x60)
+          sips -z 120 120 "$ICON_SRC" --out "$ICON_OUT/AppIcon60x60@2x.png"
+          sips -z 180 180 "$ICON_SRC" --out "$ICON_OUT/AppIcon60x60@3x.png"
 
           # iPad 图标
-          sips -z 76  76  "$ICON_SRC" --out "$ICON_OUT/icon-76.png"
-          sips -z 152 152 "$ICON_SRC" --out "$ICON_OUT/icon-152.png"
+          sips -z 76  76  "$ICON_SRC" --out "$ICON_OUT/AppIcon76x76~ipad.png"
+          sips -z 152 152 "$ICON_SRC" --out "$ICON_OUT/AppIcon76x76@2x~ipad.png"
 
           # App Store / 巨魔 图标
           sips -z 1024 1024 "$ICON_SRC" --out "$ICON_OUT/icon-1024.png"

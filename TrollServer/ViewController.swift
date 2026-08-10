@@ -517,9 +517,6 @@ class ViewController: UIViewController {
         let dStr = ByteCountFormatter.string(fromByteCount: downloaded, countStyle: .file)
         let tStr = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
         progressLabel.text = "[\(prefix)] 下载中 \(percent)% (\(dStr) / \(tStr))"
-        if percent % 20 == 0 {
-            appLog("下载进度: \(percent)% (\(dStr) / \(tStr))", level: .progress)
-        }
     }
 
     private func resetDownloadBtn() {

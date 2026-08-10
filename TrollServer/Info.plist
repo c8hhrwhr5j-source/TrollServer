@@ -22,25 +22,23 @@
 	<string>1</string>
 	<key>CFBundleIcons</key>
 	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>icon-120</string>
-				<string>icon-180</string>
-			</array>
-		</dict>
+	<key>CFBundlePrimaryIcon</key>
+	<dict>
+		<key>CFBundleIconFiles</key>
+		<array>
+			<string>AppIcon60x60</string>
+		</array>
+	</dict>
 	</dict>
 	<key>CFBundleIcons~ipad</key>
 	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>icon-76</string>
-				<string>icon-152</string>
-			</array>
-		</dict>
+	<key>CFBundlePrimaryIcon</key>
+	<dict>
+		<key>CFBundleIconFiles</key>
+		<array>
+			<string>AppIcon76x76</string>
+		</array>
+	</dict>
 	</dict>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
