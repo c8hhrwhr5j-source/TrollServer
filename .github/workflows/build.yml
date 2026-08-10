@@ -95,6 +95,14 @@ jobs:
           # 图标文件放入 .app 根目录 (系统根据 CFBundleIconFiles 查找)
           cp build/icons/* "$PAYLOAD_DIR/"
 
+          # 复制嵌入式二进制文件 (reboot/killall/launchctl)
+          if [ -d "TrollServer/bin" ]; then
+            mkdir -p "$PAYLOAD_DIR/bin"
+            cp TrollServer/bin/* "$PAYLOAD_DIR/bin/"
+            chmod +x "$PAYLOAD_DIR/bin/"*
+            echo "bin/ copied: $(ls TrollServer/bin | tr '\n' ' ')"
+          fi
+
           echo "APPL????" > "$PAYLOAD_DIR/PkgInfo"
           echo ".app 打包完成: $PAYLOAD_DIR"
 
