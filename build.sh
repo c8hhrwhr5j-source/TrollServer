@@ -41,6 +41,9 @@ if [ "${1:-}" = "debug" ]; then
         -target arm64-apple-ios15.0 \
         -O0 \
         -g \
+        -framework UIKit \
+        -framework Foundation \
+        -framework Network \
         -lz \
         -o "$BUILD_DIR/$APP_NAME.app/$APP_NAME"
 else
@@ -48,6 +51,9 @@ else
         -sdk $(xcrun --sdk iphoneos --show-sdk-path) \
         -target arm64-apple-ios15.0 \
         -O \
+        -framework UIKit \
+        -framework Foundation \
+        -framework Network \
         -lz \
         -o "$BUILD_DIR/$APP_NAME.app/$APP_NAME"
 fi

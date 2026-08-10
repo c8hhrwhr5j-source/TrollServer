@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import UIKit
 import zlib
 
 // ============================================================
@@ -11,9 +12,10 @@ import zlib
 
 enum InstallMethod: String {
     case trollstorehelper  = "trollstorehelper"
+    case trollstoreURLScheme = "TrollStore URL Scheme"
     case lsApplicationWorkspace = "LSApplicationWorkspace"
     case mobileInstallation = "MobileInstallation"
-    case fileCopy           = "文件复制到检测目录"
+    case fileCopy           = "文件复制"
 }
 
 // MARK: - 安装结果
@@ -571,16 +573,15 @@ class SilentInstall {
             extractedAppPath = appPath
         }
 
-        // ---- 步骤5: 尝试安装（多策略） ----
-        // ---- 步骤4: 尝试安装（多策略） ----
+        // ---- 步骤4: 尝试安装（多策略，从最可靠到最不可靠） ----
         var lastError = ""
         let targetPath = extractedAppPath ?? ipaPath
-        let isAppPath = extractedAppPath != nil
 
         let strategies: [(InstallMethod, () -> (Bool, String))] = [
-            (.trollstorehelper, { installViaHelper(targetPath, isAppPath: isAppPath) }),
+            (.trollstorehelper, { installViaHelper(ipaPath) }),
             (.lsApplicationWorkspace, { installViaLSWorkspace(targetPath) }),
             (.mobileInstallation, { installViaMobileInstallation(targetPath) }),
+            (.trollstoreURLScheme, { installViaURLScheme(ipaPath) }),
             (.fileCopy, { installViaFileCopy(ipaPath) }),
         ]
 
@@ -617,19 +618,19 @@ class SilentInstall {
     }
 
     // ============================================================
-    // MARK: - ═══ 安装策略1: trollstorehelper ═══
+    // MARK: - ═══ 安装策略1: trollstorehelper（root 提权执行） ═══
     // ============================================================
 
-    private static func installViaHelper(_ targetPath: String, isAppPath: Bool) -> (Bool, String) {
+    private static func installViaHelper(_ targetPath: String) -> (Bool, String) {
         guard let helper = findTrollStoreHelper() else {
             return (false, "trollstorehelper 未找到")
         }
 
-        // trollstorehelper 的 install 命令可以接收 .ipa 或 .app 路径
-        print("[SilentInstall] 调用: \(helper) install \(targetPath)")
-        let ret = spawnAndWait(helper, arguments: ["install", targetPath])
+        // 用法: trollstorehelper install <ipaPath>
+        print("[SilentInstall] spawnRoot: \(helper) install \(targetPath)")
+        let ret = spawnRoot(helper, arguments: ["install", targetPath])
         if ret == 0 {
-            return (true, "trollstorehelper 返回成功")
+            return (true, "trollstorehelper 安装成功")
         } else {
             return (false, "trollstorehelper 退出码: \(ret)")
         }
@@ -639,147 +640,87 @@ class SilentInstall {
     // MARK: - ═══ 安装策略2: LSApplicationWorkspace 私有 API ═══
     // ============================================================
 
-    private static func installViaLSWorkspace(ipaPath: String) -> (Bool, String) {
-        // 需要用到解压后的 .app 路径
-        // 如果当前没有解压的 .app，尝试使用 unzip 从 IPA 中提取
-        let appResult = extractApp(from: ipaPath)
-        guard let appPath = appResult.appPath else {
-            return (false, "LSWorkspace: 无法解压 .app: \(appResult.error ?? "unknown")")
-        }
-
-        // 使用 Objective-C 运行时调用 LSApplicationWorkspace
+    private static func installViaLSWorkspace(_ targetPath: String) -> (Bool, String) {
         guard let workspaceClass = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type else {
             return (false, "LSWorkspace: 无法找到 LSApplicationWorkspace 类")
         }
-
-        let sel = NSSelectorFromString("defaultWorkspace")
-        guard workspaceClass.responds(to: sel) else {
-            return (false, "LSWorkspace: defaultWorkspace 方法不存在")
-        }
-
-        guard let workspace = workspaceClass.perform(sel)?.takeUnretainedValue() as? NSObject else {
+        guard let workspace = workspaceClass.perform(NSSelectorFromString("defaultWorkspace"))?.takeUnretainedValue() as? NSObject else {
             return (false, "LSWorkspace: 获取 defaultWorkspace 实例失败")
         }
 
-        // 构造安装选项（静默安装，不弹确认框）
-        let options: [String: Any] = [
-            "LSInstallSilently": true,
-            "LSInstallForUser": 501,  // mobile 用户
-            "AllowInstallLocalProvisioned": true,
-        ]
-        let appURL = URL(fileURLWithPath: appPath)
+        let appURL = URL(fileURLWithPath: targetPath)
+        let options: [String: Any] = ["LSInstallSilently": true]
 
-        // 尝试多个可能的 selector 签名
-        let installSelectors = [
-            "installApplication:withOptions:",
-            "installApplication:withOptions:error:",
-            "_installApplication:withOptions:",
-        ]
-
-        for selName in installSelectors {
-            let installSel = NSSelectorFromString(selName)
-            guard workspace.responds(to: installSel) else { continue }
-
-            // 检查方法签名参数数量
-            let methodSig = workspace.method(for: installSel)
-            if methodSig == nil { continue }
-
-            // 尝试调用（单参数版本: installApplication:）
-            if selName == "installApplication:withOptions:" {
-                let result = workspace.perform(installSel, with: appURL, with: options as NSDictionary)
-                // 等待安装完成
-                usleep(2000000)
-                print("[SilentInstall] LSApplicationWorkspace.installApplication 返回")
-                return (true, "LSApplicationWorkspace 安装调用完成")
-            }
-
-            // 三参数版本: installApplication:withOptions:error:
-            if selName == "installApplication:withOptions:error:" {
-                var error: NSError?
-                typealias InstallFunc = @convention(c) (AnyObject, Selector, Any, Any, UnsafeMutablePointer<NSError?>) -> Bool
-                let imp = workspace.method(for: installSel)
-                let install = unsafeBitCast(imp, to: InstallFunc.self)
-                let ok = install(workspace, installSel, appURL, options as NSDictionary, &error)
-                if ok {
-                    usleep(2000000)
-                    return (true, "LSApplicationWorkspace 安装调用完成")
-                }
-                if let err = error {
-                    return (false, "LSWorkspace 安装错误: \(err.localizedDescription)")
-                }
-                return (false, "LSWorkspace 安装返回失败")
-            }
+        // 标准 ObjC 方法签名: installApplication:withOptions: -> void
+        let sel = NSSelectorFromString("installApplication:withOptions:")
+        guard workspace.responds(to: sel) else {
+            return (false, "LSWorkspace: 不响应 installApplication:withOptions:")
         }
 
-        return (false, "LSWorkspace: 未找到可用的安装方法")
+        typealias InstallFunc = @convention(c) (AnyObject, Selector, URL, NSDictionary) -> Void
+        let imp = workspace.method(for: sel)
+        let install = unsafeBitCast(imp, to: InstallFunc.self)
+        install(workspace, sel, appURL, options as NSDictionary)
+
+        // 等待安装
+        usleep(3000000)
+        return (true, "LSApplicationWorkspace 安装调用完成")
     }
 
     // ============================================================
-    // MARK: - ═══ 安装策略3: MobileInstallation 框架 ═══
+    // MARK: - ═══ 安装策略3: TrollStore URL Scheme（最通用方案） ═══
+    // ============================================================
+    /// TrollStore 注册了 apple-magnifier:// URL Scheme
+    /// 这是最通用的安装方案：不依赖 helper 路径，任何 TrollStore 设备都支持
+
+    private static func installViaURLScheme(_ ipaPath: String) -> (Bool, String) {
+        let fileURL = URL(fileURLWithPath: ipaPath)
+        let urlStr = "apple-magnifier://install?url=\(fileURL.absoluteString)"
+            .addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? ""
+
+        guard let url = URL(string: urlStr) else {
+            return (false, "TrollStore URL Scheme: 无法构造 URL")
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var result = false
+        DispatchQueue.main.async {
+            if UIApplication.shared.canOpenURL(url) {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+                result = true
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 3)
+        return result ? (true, "已通过 TrollStore 安装") : (false, "TrollStore URL Scheme: 无法打开")
+    }
+
+    // ============================================================
+    // MARK: - ═══ 安装策略4: MobileInstallation 框架 ═══
     // ============================================================
 
-    private static func installViaMobileInstallation(ipaPath: String) -> (Bool, String) {
-        let appResult = extractApp(from: ipaPath)
-        guard let appPath = appResult.appPath else {
-            return (false, "MobileInstallation: 无法解压 .app: \(appResult.error ?? "unknown")")
-        }
-
-        // MobileInstallation.framework 路径
-        let frameworkPaths = [
-            "/System/Library/PrivateFrameworks/MobileInstallation.framework/MobileInstallation",
-            "/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager",
-        ]
-
-        var handle: UnsafeMutableRawPointer?
-        for fwPath in frameworkPaths {
-            handle = dlopen(fwPath, RTLD_LAZY)
-            if handle != nil { break }
-        }
-
-        guard let handle = handle else {
-            return (false, "MobileInstallation 框架加载失败: \(String(cString: dlerror()))")
+    private static func installViaMobileInstallation(_ targetPath: String) -> (Bool, String) {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/MobileInstallation.framework/MobileInstallation", RTLD_LAZY) else {
+            return (false, "MobileInstallation 框架加载失败")
         }
         defer { dlclose(handle) }
 
-        // MobileInstallationInstall 函数签名（iOS 14-16）
-        // int MobileInstallationInstall(CFStringRef path, CFDictionaryRef options, void *callback, void *unknown)
         guard let symbol = dlsym(handle, "MobileInstallationInstall") else {
             return (false, "MobileInstallationInstall 符号未找到")
         }
 
         typealias MIInstallFunc = @convention(c) (
-            CFString,          // path
-            CFDictionary,      // options
-            UnsafeMutableRawPointer?, // callback
-            UnsafeMutableRawPointer?  // unknown
+            CFString, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?
         ) -> Int32
 
         let installFunc = unsafeBitCast(symbol, to: MIInstallFunc.self)
+        let rc = installFunc(targetPath as CFString, nil, nil, nil)
 
-        // 安装选项
-        let options: [CFString: Any] = [
-            "InstallType" as CFString: "System",
-            "PackageType" as CFString: "Developer",
-        ]
-
-        // 使用全局信号量等待回调
-        var installResult: (Bool, String) = (false, "未收到安装回调")
-        let semaphore = DispatchSemaphore(value: 0)
-
-        // 安装回调（C 函数指针 → Swift 闭包需通过全局变量桥接）
-        MIInstallCallbackBridge.shared = { success, message in
-            installResult = (success, message)
-            semaphore.signal()
+        if rc == 0 {
+            usleep(2000000)
+            return (true, "MobileInstallation 安装成功")
         }
-
-        let rc = installFunc(appPath as CFString, options as CFDictionary, nil, nil)
-        if rc != 0 {
-            return (false, "MobileInstallationInstall 返回错误码: \(rc)")
-        }
-
-        // 等待最多 30 秒
-        _ = semaphore.wait(timeout: .now() + 30)
-        return installResult
+        return (false, "MobileInstallation 返回错误码: \(rc)")
     }
 
     // ============================================================
@@ -875,42 +816,33 @@ class SilentInstall {
         _ = spawnAndWait("/bin/sh", arguments: ["-c", "killall -9 \(executableName) 2>/dev/null; true"])
     }
 
-    /// 查找 trollstorehelper（参照 TrollStoreRemoteHelper 实现）
+    /// 通用查找 trollstorehelper：先用 find 系统命令搜索，再回退到已知路径
     static func findTrollStoreHelper() -> String? {
-        // 1. 常见绝对路径
+        // 1. 用 find 命令全局搜索（最可靠，不受权限限制）
+        if let data = spawnRootAndCapture("/usr/bin/find", arguments: [
+            "/", "-name", "trollstorehelper", "-type", "f",
+            "(", "-path", "*/TrollStore.app/*", "-o", "-path", "*/usr/bin/*", ")",
+            "-not", "-path", "*/Backups/*", "-not", "-path", "*/.Trash/*",
+            "-print", "-quit", "2>/dev/null"
+        ]) {
+            let output = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !output.isEmpty && FileManager.default.isExecutableFile(atPath: output) {
+                return output
+            }
+        }
+
+        // 2. 常见绝对路径（fast path）
         let knownPaths = [
             "/Applications/TrollStore.app/trollstorehelper",
             "/var/jb/Applications/TrollStore.app/trollstorehelper",
             "/private/var/jb/Applications/TrollStore.app/trollstorehelper",
             "/var/jb/usr/bin/trollstorehelper",
             "/usr/bin/trollstorehelper",
-            "/usr/local/bin/trollstorehelper",
-            "/private/var/jb/usr/bin/trollstorehelper",
         ]
         for path in knownPaths {
             if FileManager.default.isExecutableFile(atPath: path) {
                 return path
-            }
-        }
-
-        // 2. 扫描 /var/containers/Bundle/Application 下的 TrollStore.app
-        let appContainersPath = "/var/containers/Bundle/Application"
-        if let containers = try? FileManager.default.contentsOfDirectory(atPath: appContainersPath) {
-            for container in containers {
-                let candidate = "\(appContainersPath)/\(container)/TrollStore.app/trollstorehelper"
-                if FileManager.default.isExecutableFile(atPath: candidate) {
-                    return candidate
-                }
-            }
-        }
-
-        // 3. 扫描 /Applications 下所有 .app
-        if let apps = try? FileManager.default.contentsOfDirectory(atPath: "/Applications") {
-            for app in apps where app.hasSuffix(".app") {
-                let candidate = "/Applications/\(app)/trollstorehelper"
-                if FileManager.default.isExecutableFile(atPath: candidate) {
-                    return candidate
-                }
             }
         }
 
@@ -923,21 +855,37 @@ class SilentInstall {
     }
 
     // ============================================================
-    // MARK: - ═══ posix_spawn 辅助 ═══
+    // MARK: - ═══ posix_spawn 辅助（通用） ═══
     // ============================================================
 
-    static func spawnAndWait(_ path: String, arguments: [String]) -> Int32 {
+    /// 以 root 身份执行命令（TrollStore 内部标准做法）
+    /// 使用 posix_spawnattr_set_persona_np 提权到 uid=0/gid=0
+    static func spawnRoot(_ path: String, arguments: [String]) -> Int32 {
+        var attrs: posix_spawnattr_t?
+        posix_spawnattr_init(&attrs)
+        defer { posix_spawnattr_destroy(&attrs) }
+
+        // TrollStore 标准提权流程
+        let persona: UInt64 = 99
+        let personaFlags: UInt32 = 1
+        let uid: uid_t = 0
+        let gid: gid_t = 0
+
+        withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
+        withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
+        withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
+
         let cargs = arguments.map { strdup($0) }
         defer { cargs.forEach { free($0) } }
 
         var pid: pid_t = 0
         var argv = cargs + [nil]
         let ret = argv.withUnsafeMutableBufferPointer { ptr in
-            posix_spawn(&pid, path, nil, nil, ptr.baseAddress, nil)
+            posix_spawn(&pid, path, nil, &attrs, ptr.baseAddress, nil)
         }
 
         guard ret == 0 else {
-            print("[SilentInstall] posix_spawn(\"\(path)\") 失败: \(ret)")
+            print("[SilentInstall] spawnRoot(\"\(path)\") 失败: \(ret)")
             return -1
         }
 
@@ -946,7 +894,8 @@ class SilentInstall {
         return (status >> 8) & 0x000000ff
     }
 
-    static func spawnAndCapture(_ path: String, arguments: [String]) -> Data? {
+    /// 以 root 身份执行命令并捕获标准输出
+    static func spawnRootAndCapture(_ path: String, arguments: [String]) -> Data? {
         var pipeFD: [Int32] = [0, 0]
         guard pipe(&pipeFD) == 0 else { return nil }
 
@@ -955,16 +904,28 @@ class SilentInstall {
         posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
         posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
 
+        var attrs: posix_spawnattr_t?
+        posix_spawnattr_init(&attrs)
+
+        let persona: UInt64 = 99
+        let personaFlags: UInt32 = 1
+        let uid: uid_t = 0
+        let gid: gid_t = 0
+        withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
+        withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
+        withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
+
         let cargs = arguments.map { strdup($0) }
         defer {
             cargs.forEach { free($0) }
             posix_spawn_file_actions_destroy(&fileActions)
+            posix_spawnattr_destroy(&attrs)
         }
 
         var pid: pid_t = 0
         var argv = cargs + [nil]
         let ret = argv.withUnsafeMutableBufferPointer { ptr in
-            posix_spawn(&pid, path, &fileActions, nil, ptr.baseAddress, nil)
+            posix_spawn(&pid, path, &fileActions, &attrs, ptr.baseAddress, nil)
         }
         close(pipeFD[1])
 
@@ -981,6 +942,15 @@ class SilentInstall {
         close(pipeFD[0])
         waitpid(pid, &status, 0)
         return data.isEmpty ? nil : data
+    }
+
+    static func spawnAndWait(_ path: String, arguments: [String]) -> Int32 {
+        return spawnRoot(path, arguments: arguments)
+    }
+
+    static func spawnAndCapture(_ path: String, arguments: [String]) -> Data? {
+        return spawnRootAndCapture(path, arguments: arguments)
+    }
     }
 
     private static func isExecutable(at path: String) -> Bool {
@@ -1000,8 +970,3 @@ class SilentInstall {
 
 // MARK: - MobileInstallation 回调桥接
 
-private typealias MIInstallCallback = @convention(c) (CFDictionary?) -> Void
-
-private class MIInstallCallbackBridge {
-    static var shared: ((Bool, String) -> Void)?
-}
