@@ -156,6 +156,32 @@ class SilentInstall {
     // MARK: - ═══ IPA 验证 ═══
     // ============================================================
 
+    /// 返回可用的 unzip 二进制路径（iOS 上不一定在 /usr/bin）
+    static func findUnzipBinary() -> String? {
+        let candidates = [
+            "/usr/bin/unzip",
+            "/usr/local/bin/unzip",
+            "/var/jb/usr/bin/unzip",
+            "/var/bin/unzip",
+            "/bin/unzip",
+        ]
+        for p in candidates {
+            if FileManager.default.isExecutableFile(atPath: p) {
+                return p
+            }
+        }
+        return nil
+    }
+
+    /// 简单判断是否为 ZIP 文件（PK\x03\x04）
+    static func isZipFile(at path: String) -> Bool {
+        guard let fh = FileHandle(forReadingAtPath: path),
+              let magic = try? fh.read(upToCount: 4),
+              magic.count == 4 else { return false }
+        try? fh.close()
+        return magic == Data([0x50, 0x4B, 0x03, 0x04])
+    }
+
     /// 验证 IPA 文件有效性（不解压，仅校验结构）
     static func validateIPA(at path: String) -> (ok: Bool, detail: String) {
         // 1. 文件存在
@@ -183,19 +209,79 @@ class SilentInstall {
             return (false, "IPA 签名无效（非 ZIP 格式）: \(sig)")
         }
 
-        // 4. 快速扫描 Payload/ 目录是否存在
-        guard let listData = spawnAndCapture("/usr/bin/unzip", arguments: ["-l", path]),
-              let listing = String(data: listData, encoding: .utf8),
-              listing.contains("Payload/") else {
-            return (false, "IPA 中未找到 Payload/ 目录")
+        // 4. 快速扫描 Payload/ 目录是否存在（尝试多个 unzip 路径）
+        var listing: String = ""
+        if let unzipPath = findUnzipBinary() {
+            if let listData = spawnAndCapture(unzipPath, arguments: ["-l", path]) {
+                listing = String(data: listData, encoding: .utf8) ?? ""
+            }
         }
 
-        // 5. 检查是否存在 .app 目录
-        guard listing.contains(".app/") || listing.contains(".app") else {
+        // unzip 不存在时回退：读取本地 ZIP 中央目录，做简单目录名匹配
+        if listing.isEmpty {
+            listing = approximateZipListing(at: path) ?? ""
+        }
+
+        let hasPayload = listing.range(of: "Payload/", options: .caseInsensitive) != nil
+            || listing.range(of: "Payload", options: .caseInsensitive) != nil
+        let hasApp = listing.range(of: ".app/", options: .caseInsensitive) != nil
+            || listing.range(of: ".app", options: .caseInsensitive) != nil
+
+        guard hasPayload else {
+            return (false, "IPA 中未找到 Payload/ 目录（unzip可用路径：\(findUnzipBinary() ?? "无")，解析条目数：\(listing.components(separatedBy: CharacterSet.newlines).count)）")
+        }
+
+        guard hasApp else {
             return (false, "IPA Payload 中未找到 .app 包")
         }
 
         return (true, "IPA 文件有效，\(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))")
+    }
+
+    /// 当 unzip 不可用时，用中央目录尾（EOCD）粗略枚举 ZIP 条目名
+    private static func approximateZipListing(at path: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe]) else {
+            return nil
+        }
+        guard data.count > 22 else { return nil }
+
+        // 查找 EOCD 签名 0x06054b50
+        let eocdSig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
+        var eocdOffset = -1
+        for i in (0..<(data.count - 22)).reversed() {
+            if Array(data[i..<i+4]) == eocdSig {
+                eocdOffset = i
+                break
+            }
+        }
+        guard eocdOffset >= 0 else { return nil }
+
+        let cdStart = Int(data.withUnsafeBytes { ptr in
+            ptr.load(fromByteOffset: eocdOffset + 16, as: UInt32.self)
+        })
+        let cdSize = Int(data.withUnsafeBytes { ptr in
+            ptr.load(fromByteOffset: eocdOffset + 12, as: UInt32.self)
+        })
+        guard cdStart + cdSize <= data.count else { return nil }
+
+        let cdData = data.subdata(in: cdStart..<cdStart + cdSize)
+        var entries: [String] = []
+        var offset = 0
+        while offset + 46 <= cdData.count {
+            let sig = cdData.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
+            guard sig == 0x02014B50 else { break }
+            let nameLen = Int(cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 28, as: UInt16.self) })
+            let extraLen = Int(cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 30, as: UInt16.self) })
+            let commentLen = Int(cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 32, as: UInt16.self) })
+            let start = offset + 46
+            let end = start + nameLen
+            guard end <= cdData.count else { break }
+            if let name = String(data: cdData.subdata(in: start..<end), encoding: .utf8) {
+                entries.append(name)
+            }
+            offset = end + extraLen + commentLen
+        }
+        return entries.joined(separator: "\n")
     }
 
     /// 从 IPA 提取 Info.plist 信息
@@ -350,10 +436,17 @@ class SilentInstall {
         // ---- 步骤1: 文件校验 ----
         report(progress, .progress(phase: "文件校验", detail: "正在验证 IPA 文件...", percent: 5))
         let validateResult = validateIPA(at: ipaPath)
-        guard validateResult.ok else {
-            return .failure(message: "IPA 验证失败: \(validateResult.detail)")
+        if validateResult.ok {
+            print("[SilentInstall] \(validateResult.detail)")
+        } else {
+            // 只要文件是合法 ZIP，就继续尝试安装（trollstorehelper 自己会再校验一次）
+            if isZipFile(at: ipaPath) {
+                print("[SilentInstall] IPA 结构校验警告: \(validateResult.detail)")
+                print("[SilentInstall] 文件仍为合法 ZIP，将继续尝试安装")
+            } else {
+                return .failure(message: "IPA 验证失败: \(validateResult.detail)")
+            }
         }
-        print("[SilentInstall] \(validateResult.detail)")
 
         // ---- 步骤2: 提取包信息 ----
         report(progress, .progress(phase: "信息提取", detail: "正在读取应用信息...", percent: 10))
