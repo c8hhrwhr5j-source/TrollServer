@@ -89,7 +89,7 @@ FrontBoard 的 XPC 通信在 reboot 模式下存在 bug。壳可能依赖其他�
 2. 通过 persona-mgmt 以 root 身份 spawn 该 helper
 3. 降级方案：helper 失败时尝试 `FBSSystemService.shutdown`
 
-**验证结果**：在 TrollStore 环境下，所有重启方案（1-7）最终行为均为关机，无法触发真正的设备重启。已将 UI 按钮和日志统一改为"关机"。
+**验证结果**：在 TrollStore 环境下，helper 未被 ldid2 签名，缺少 `com.apple.system.reboot` entitlement，AMFI 拒绝 reboot()，行为等价于关机。
 
 ```c
 // reboot_helper.c
@@ -166,7 +166,7 @@ kill(1, SIGKILL) → 无 entitlement 检查 → launchd 死亡 → 内核 panic 
 
 **验证结果**：❌ 仍是关机。现代 iOS 内核保护了 launchd (PID 1)，即使 root 发送 SIGKILL 也被拦截，走干净关机路径而非内核 panic。
 
-## 方案 9：reboot_helper + com.apple.system.reboot entitlement（当前方案）— ⏳ 待验证
+## 方案 9：reboot_helper + com.apple.system.reboot entitlement — ✅ 验证成功！
 
 **根本原因分析**：回顾方案 1-8 全部失败的原因，问题不在 `reboot()` 的参数，而在于 **helper 二进制从未被签名**。
 
@@ -209,17 +209,13 @@ int main(int argc, char *argv[]) {
 }
 ```
 
-**为什么这次可能成功**：
-- AMFI 检查的是进程自己的 entitlements，不是父进程的
-- 给 helper 单独签名后，AMFI 在 helper 进程空间能看到 `com.apple.system.reboot`
-- reboot(0) 是经过验证的正确调用（DevelopCubeLab/RebootTools 款）
-- root + entitlement 两个条件同时满足 = 完整重启路径
+**验证结果**：✅ **成功！设备真正重启，显示 Apple logo 后回到锁定屏幕。**
 
 ### 当前改动（方案 9）
 | 文件 | 改动 |
 |------|------|
-| `reboot_helper.c` | 恢复 `reboot(0)`，更新注释说明 entitlement 签名关键 |
+| `reboot_helper.c` | `reboot(0)` + 更新注释说明 entitlement 签名关键 |
 | `reboot_helper.entitlements` | **新建**，包含 `com.apple.system.reboot` |
 | `build.sh` | 编译后增加 `ldid2 -S reboot_helper.entitlements` 签名步骤 |
 | `.github/workflows/build.yml` | 新增"签名 reboot_helper"步骤，安装 ldid 后签名 |
-| `ViewController.swift` | 暂时保留"关机" UI 文字，待验证后再改 |
+| `ViewController.swift` | UI 按钮、方法名、日志全部改回"重启设备" |
