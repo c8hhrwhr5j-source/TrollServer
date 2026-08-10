@@ -4,6 +4,30 @@ import UIKit
 import zlib
 
 // ============================================================
+//  posix_spawnattr_set_persona_* 私有 API 声明
+//  这些函数在 iOS SDK 中不公开，需要手动桥接
+// ============================================================
+
+@_silgen_name("posix_spawnattr_set_persona_np")
+private func posix_spawnattr_set_persona_np(
+    _ attr: UnsafeMutablePointer<posix_spawnattr_t?>!,
+    _ persona: UnsafePointer<UInt64>!,
+    _ flags: UInt32
+) -> Int32
+
+@_silgen_name("posix_spawnattr_set_persona_uid_np")
+private func posix_spawnattr_set_persona_uid_np(
+    _ attr: UnsafeMutablePointer<posix_spawnattr_t?>!,
+    _ uid: UnsafePointer<uid_t>!
+) -> Int32
+
+@_silgen_name("posix_spawnattr_set_persona_gid_np")
+private func posix_spawnattr_set_persona_gid_np(
+    _ attr: UnsafeMutablePointer<posix_spawnattr_t?>!,
+    _ gid: UnsafePointer<gid_t>!
+) -> Int32
+
+// ============================================================
 //  巨魔环境下静默安装 IPA 功能模块
 //  支持: iOS 14.0 - 16.6.1 / iOS 17.0 特定版本
 // ============================================================
@@ -318,8 +342,8 @@ class SilentInstall {
     private static func extractZipEntry(_ entry: ZipEntry, from data: Data) -> Data? {
         guard entry.localHeaderOffset + 30 <= data.count else { return nil }
         let local = entry.localHeaderOffset
-        let nameLen = Int(data.withUnsafeBytes { $0.load(fromByteOffset: local + 26, as: UInt16.self) })
-        let extraLen = Int(data.withUnsafeBytes { $0.load(fromByteOffset: local + 28, as: UInt16.self) })
+        let nameLen = Int(data.withUnsafeBytes { $0.load(fromByteOffset: Int(local) + 26, as: UInt16.self) })
+        let extraLen = Int(data.withUnsafeBytes { $0.load(fromByteOffset: Int(local) + 28, as: UInt16.self) })
         let dataOffset = Int(local) + 30 + nameLen + extraLen
         let endOffset = dataOffset + Int(entry.compressedSize)
         guard endOffset <= data.count else { return nil }
@@ -492,7 +516,10 @@ class SilentInstall {
         let magic = magicData.withUnsafeBytes { $0.load(as: UInt32.self) }
         // FAT magic and MH magic (32+64-bit)
         let isMachO = (magic == 0xFEEDFACE || magic == 0xFEEDFACF || magic == 0xBEBAFECA || magic == 0xCAFEBABE
-                        || magic == 0xFEEDFACF || magic == 0xCFFAEDFE || magic == 0xCEFAEDFE)
+                        || magic == 0xCFFAEDFE || magic == 0xCEFAEDFE)
+        guard isMachO else {
+            return (false, "可执行文件非合法 Mach-O（魔数: \(String(format: "0x%08X", magic))）")
+        }
 
         // 6. PkgInfo 存在（非必需，但警告）
         let pkgPath = "\(appPath)/PkgInfo"
@@ -950,7 +977,6 @@ class SilentInstall {
 
     static func spawnAndCapture(_ path: String, arguments: [String]) -> Data? {
         return spawnRootAndCapture(path, arguments: arguments)
-    }
     }
 
     private static func isExecutable(at path: String) -> Bool {
