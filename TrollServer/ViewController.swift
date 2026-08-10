@@ -133,18 +133,14 @@ class ViewController: UIViewController {
         titleLabel.textAlignment = .center
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // ---- 设备信息标签（在白框外面） ----
+        let deviceInfoLabel = makeSectionLabel("设备信息")
+
         // ---- 状态卡片 ----
         let statusCard = UIView()
         statusCard.backgroundColor = .secondarySystemGroupedBackground
         statusCard.layer.cornerRadius = 12
         statusCard.translatesAutoresizingMaskIntoConstraints = false
-
-        let cardTitle = UILabel()
-        cardTitle.text = "设备信息"
-        cardTitle.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
-        cardTitle.textColor = .label
-        cardTitle.translatesAutoresizingMaskIntoConstraints = false
-        statusCard.addSubview(cardTitle)
 
         let keys = ["机型", "CPU", "系统版本", "硬盘", "序列号", "IP地址"]
         statusRows.removeAll()
@@ -252,6 +248,7 @@ class ViewController: UIViewController {
         contentView.translatesAutoresizingMaskIntoConstraints = false
 
         contentView.addSubview(titleLabel)
+        contentView.addSubview(deviceInfoLabel)
         contentView.addSubview(statusCard)
         contentView.addSubview(taskLabel)
         contentView.addSubview(taskRow1)
@@ -288,13 +285,13 @@ class ViewController: UIViewController {
             titleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
 
             // 状态卡片
-            statusCard.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 12),
+            deviceInfoLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            deviceInfoLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+
+            statusCard.topAnchor.constraint(equalTo: deviceInfoLabel.bottomAnchor, constant: 6),
             statusCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             statusCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            cardTitle.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 10),
-            cardTitle.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
-            cardTitle.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
-            statusStack.topAnchor.constraint(equalTo: cardTitle.bottomAnchor, constant: 6),
+            statusStack.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 10),
             statusStack.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
             statusStack.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
             statusStack.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: -10),
