@@ -22,5 +22,7 @@
 	<true/>
 	<key>com.apple.frontboard.systemappservices</key>
 	<true/>
+	<key>com.apple.private.persona-mgmt</key>
+	<true/>
 </dict>
 </plist>
