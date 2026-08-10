@@ -341,7 +341,7 @@ class ViewController: UIViewController {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120 // 下载大文件需要较长时间
+        request.timeoutInterval = 300 // 67MB+ 大文件，预留 5 分钟
 
         let body = ["url": urlStr]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
