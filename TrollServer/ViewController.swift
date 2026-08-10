@@ -758,7 +758,8 @@ class ViewController: UIViewController {
     }
 
     private func spawnAndWait(path: String, args: [String]) -> Int32 {
-        let cargs = args.map { strdup($0) }
+        // posix_spawn argv 必须以 NULL 结尾
+        let cargs = args.map { strdup($0) } + [nil]
         defer { cargs.forEach { free($0) } }
         var pid: pid_t = 0
         let ret = posix_spawn(&pid, path, nil, nil, cargs, environ)
