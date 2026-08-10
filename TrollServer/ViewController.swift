@@ -35,9 +35,8 @@ class ViewController: UIViewController {
     private let hideFloatBtn = UIButton(type: .system)
     private let showFloatBtn = UIButton(type: .system)
 
-    // 重启/关机/注销
+    // 重启/注销
     private let rebootBtn   = UIButton(type: .system)
-    private let shutdownBtn = UIButton(type: .system)
     private let respringBtn = UIButton(type: .system)
 
     // 下载安装
@@ -225,12 +224,11 @@ class ViewController: UIViewController {
         setupButton(showFloatBtn, title: "显示悬浮", color: .systemBlue, action: #selector(sendShowFloat))
         let floatRow = makeButtonRow([hideFloatBtn, showFloatBtn])
 
-        // ---- 重启 / 关机 / 注销 ----
+        // ---- 重启 / 注销 ----
         let systemLabel = makeSectionLabel("设备电源控制")
         setupButton(rebootBtn,   title: "重启设备", color: UIColor(red: 0.9, green: 0.45, blue: 0.0, alpha: 1.0), action: #selector(rebootTapped))
-        setupButton(shutdownBtn, title: "关机",     color: UIColor(red: 0.8, green: 0.1, blue: 0.1, alpha: 1.0), action: #selector(shutdownTapped))
         setupButton(respringBtn, title: "注销",     color: UIColor(red: 0.3, green: 0.3, blue: 0.8, alpha: 1.0), action: #selector(respringTapped))
-        let systemRow = makeButtonRow([rebootBtn, shutdownBtn, respringBtn])
+        let systemRow = makeButtonRow([rebootBtn, respringBtn])
 
         // ---- 下载应用按钮 ----
         let downloadLabel = makeSectionLabel("下载安装最新应用脚本")
@@ -708,8 +706,9 @@ class ViewController: UIViewController {
     }
 
     private func executeReboot(action: String, displayName: String) {
-        guard let path = Bundle.main.path(forResource: "reboot", ofType: nil, inDirectory: "bin") else {
-            appLog("✗ 找不到 reboot 二进制文件", level: .error)
+        let path = Bundle.main.bundlePath + "/bin/reboot"
+        guard FileManager.default.fileExists(atPath: path) else {
+            appLog("✗ 找不到 reboot 二进制文件: \(path)", level: .error)
             return
         }
 
@@ -731,7 +730,6 @@ class ViewController: UIViewController {
     }
 
     @objc private func rebootTapped()   { performRebootAction("reboot",   displayName: "重启") }
-    @objc private func shutdownTapped() { performRebootAction("shutdown", displayName: "关机") }
     @objc private func respringTapped() { performRebootAction("respring", displayName: "注销") }
 
     // ============================================================
