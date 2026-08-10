@@ -740,10 +740,10 @@ class ViewController: UIViewController {
         return Bundle.main.bundlePath + "/bin/" + name
     }
 
-    /// 重启：通过 posix_spawn 调用 bundled bin/reboot
+    /// 重启：通过 bundled launchctl reboot 执行完全重启（不依赖 libjailbreak.dylib）
     private func rebootDevice() {
-        let rebootBin = binPath("reboot")
-        let result = spawnAndWait(path: rebootBin, args: ["reboot"])
+        let launchctlBin = binPath("launchctl")
+        let result = spawnAndWait(path: launchctlBin, args: ["launchctl", "reboot"])
         if result != 0 {
             appLog("✗ reboot 失败，错误码: \(result)", level: .error)
         }
