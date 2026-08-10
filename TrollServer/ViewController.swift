@@ -17,7 +17,7 @@ private let logFmt: DateFormatter = {
 }()
 private var logUpdateHandler: (() -> Void)?
 
-class ViewController: UIViewController, UIDocumentPickerDelegate {
+class ViewController: UIViewController {
 
     private let serverRunner: DaemonServerRunner
 
@@ -386,11 +386,15 @@ class ViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func getDeviceSerial() -> String {
-        typealias MGCopyAnswerFunc = @convention(c) (CFString) -> Unmanaged<CFTypeRef>?
-        if let sym = dlsym(RTLD_DEFAULT, "MGCopyAnswer") {
-            let f = unsafeBitCast(sym, to: MGCopyAnswerFunc.self)
-            if let result = f("SerialNumber" as CFString)?.takeRetainedValue() as? String {
-                return result
+        // 尝试通过 MobileGestalt 获取序列号
+        typealias MGCopyAnswerFunc = @convention(c) (CFString) -> Unmanaged<CFString>?
+        if let handle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY) {
+            defer { dlclose(handle) }
+            if let sym = dlsym(handle, "MGCopyAnswer") {
+                let f = unsafeBitCast(sym, to: MGCopyAnswerFunc.self)
+                if let result = f("SerialNumber" as CFString)?.takeRetainedValue() as String? {
+                    return result
+                }
             }
         }
         return "不可用"
@@ -610,10 +614,9 @@ class ViewController: UIViewController, UIDocumentPickerDelegate {
     // ============================================================
 
     @objc private func installAppTapped() {
-        let docsDir = "/var/mobile/Documents"
-        let ipaFiles = scanIPAFiles(in: docsDir)
+        let targetPath = "/var/mobile/Documents/app-release.ipa"
 
-        if ipaFiles.isEmpty {
+        guard FileManager.default.fileExists(atPath: targetPath) else {
             let alert = UIAlertController(
                 title: "提示",
                 message: "您还没有下载应用，请先下载",
@@ -624,24 +627,25 @@ class ViewController: UIViewController, UIDocumentPickerDelegate {
             return
         }
 
-        // 弹出系统文件选择器
-        let docPicker = UIDocumentPickerViewController(forOpeningContentTypes: [.init(filenameExtension: "ipa")!])
-        docPicker.allowsMultipleSelection = false
-        docPicker.delegate = self
+        // 直接弹出分享面板安装
+        let fileURL = URL(fileURLWithPath: targetPath)
+        let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
 
-        if let popover = docPicker.popoverPresentationController {
+        if let popover = activityVC.popoverPresentationController {
             popover.sourceView = self.view
             popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
         }
 
-        present(docPicker, animated: true)
-    }
-
-    private func scanIPAFiles(in directory: String) -> [String] {
-        guard let contents = try? FileManager.default.contentsOfDirectory(atPath: directory) else {
-            return []
+        activityVC.completionWithItemsHandler = { [weak self] _, completed, _, _ in
+            guard let self = self else { return }
+            if completed {
+                self.appLog("✓ 已通过外部应用打开 IPA", level: .success)
+            } else {
+                self.appLog("⚠ 已取消分享", level: .warn)
+            }
         }
-        return contents.filter { $0.lowercased().hasSuffix(".ipa") }
+
+        present(activityVC, animated: true)
     }
 
     // ============================================================
@@ -670,40 +674,6 @@ class ViewController: UIViewController, UIDocumentPickerDelegate {
         return nil
     }
 
-    // ============================================================
-    // MARK: - UIDocumentPickerDelegate
-    // ============================================================
-
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let pickedURL = urls.first else { return }
-
-        // 确保文件可访问
-        let accessing = pickedURL.startAccessingSecurityScopedResource()
-        defer { if accessing { pickedURL.stopAccessingSecurityScopedResource() } }
-
-        // 弹出分享面板安装
-        let activityVC = UIActivityViewController(activityItems: [pickedURL], applicationActivities: nil)
-
-        if let popover = activityVC.popoverPresentationController {
-            popover.sourceView = self.view
-            popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
-        }
-
-        activityVC.completionWithItemsHandler = { [weak self] _, completed, _, _ in
-            guard let self = self else { return }
-            if completed {
-                self.appLog("✓ 已通过外部应用打开 IPA", level: .success)
-            } else {
-                self.appLog("⚠ 已取消分享", level: .warn)
-            }
-        }
-
-        present(activityVC, animated: true)
-    }
-
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        appLog("⚠ 已取消文件选择", level: .warn)
-    }
 }
 
 // ============================================================
