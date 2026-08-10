@@ -291,7 +291,7 @@ class InstallAPI {
         let cargs = arguments.map { strdup($0) }
         defer {
             cargs.forEach { free($0) }
-            posix_spawn_file_actions_destroy(&fileActions!)
+            posix_spawn_file_actions_destroy(&fileActions)
         }
 
         var pid: pid_t = 0
