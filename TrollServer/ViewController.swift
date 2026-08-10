@@ -139,39 +139,72 @@ class ViewController: UIViewController {
         statusCard.layer.cornerRadius = 12
         statusCard.translatesAutoresizingMaskIntoConstraints = false
 
-        let keys = ["📱 机  型", "💾 容  量", "🔑 序列号", "📶 IP    ", "⚙️ 系  统"]
-        var rowViews: [UIStackView] = []
-        statusRows.removeAll()
+        let cardTitle = UILabel()
+        cardTitle.text = "设备信息"
+        cardTitle.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+        cardTitle.textColor = .label
+        cardTitle.translatesAutoresizingMaskIntoConstraints = false
+        statusCard.addSubview(cardTitle)
 
-        for key in keys {
+        let keys = ["机型", "CPU", "系统版本", "硬盘", "序列号", "IP地址"]
+        statusRows.removeAll()
+        var rowContainers: [UIView] = []
+
+        for (idx, key) in keys.enumerated() {
+            let container = UIView()
+            container.translatesAutoresizingMaskIntoConstraints = false
+
             let kLabel = UILabel()
             kLabel.text = key
-            kLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium)
-            kLabel.textColor = .secondaryLabel
-            kLabel.setContentHuggingPriority(.required, for: .horizontal)
-            kLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+            kLabel.font = UIFont.systemFont(ofSize: 14, weight: .regular)
+            kLabel.textColor = .label
+            kLabel.translatesAutoresizingMaskIntoConstraints = false
 
             let vLabel = UILabel()
-            vLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-            vLabel.textColor = .label
+            vLabel.font = UIFont.systemFont(ofSize: 14, weight: .regular)
+            vLabel.textColor = .secondaryLabel
+            vLabel.textAlignment = .right
+            vLabel.numberOfLines = 1
+            vLabel.translatesAutoresizingMaskIntoConstraints = false
 
-            let row = UIStackView(arrangedSubviews: [kLabel, vLabel])
-            row.axis = .horizontal
-            row.spacing = 6
-            row.alignment = .firstBaseline
+            container.addSubview(kLabel)
+            container.addSubview(vLabel)
 
-            rowViews.append(row)
+            NSLayoutConstraint.activate([
+                kLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                kLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                vLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                vLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+                vLabel.leadingAnchor.constraint(greaterThanOrEqualTo: kLabel.trailingAnchor, constant: 12),
+                container.heightAnchor.constraint(equalToConstant: 38)
+            ])
+
+            // 分隔线（最后一行不加）
+            if idx < keys.count - 1 {
+                let sep = UIView()
+                sep.backgroundColor = .separator
+                sep.translatesAutoresizingMaskIntoConstraints = false
+                container.addSubview(sep)
+                NSLayoutConstraint.activate([
+                    sep.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                    sep.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                    sep.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                    sep.heightAnchor.constraint(equalToConstant: 0.5)
+                ])
+            }
+
+            rowContainers.append(container)
             statusRows.append((key: kLabel, value: vLabel))
         }
 
-        let statusStack = UIStackView(arrangedSubviews: rowViews)
+        let statusStack = UIStackView(arrangedSubviews: rowContainers)
         statusStack.axis = .vertical
-        statusStack.spacing = 4
+        statusStack.spacing = 0
         statusStack.translatesAutoresizingMaskIntoConstraints = false
         statusCard.addSubview(statusStack)
 
         // ---- 任务控制按钮 ----
-        let taskLabel = makeSectionLabel("任务控制")
+        let taskLabel = makeSectionLabel("脚本控制")
 
         setupButton(startBtn, title: "启动脚本", color: .systemGreen,  action: #selector(sendStart))
         setupButton(stopBtn,  title: "停止脚本", color: .systemRed,    action: #selector(sendStop))
@@ -182,13 +215,13 @@ class ViewController: UIViewController {
         let taskRow2 = makeButtonRow([pauseBtn, resumeBtn])
 
         // ---- 悬浮窗按钮 ----
-        let floatLabel = makeSectionLabel("悬浮窗控制")
+        let floatLabel = makeSectionLabel("悬浮球控制")
         setupButton(hideFloatBtn, title: "隐藏悬浮", color: .systemGray, action: #selector(sendHideFloat))
         setupButton(showFloatBtn, title: "显示悬浮", color: .systemBlue, action: #selector(sendShowFloat))
         let floatRow = makeButtonRow([hideFloatBtn, showFloatBtn])
 
         // ---- 下载应用按钮 ----
-        let downloadLabel = makeSectionLabel("下载最新应用脚本")
+        let downloadLabel = makeSectionLabel("下载安装最新应用脚本")
         setupButton(downloadBtn, title: "下载应用", color: .systemRed, action: #selector(confirmDownloadLatestAppScript))
         setupButton(installAppBtn, title: "安装应用", color: .systemBlue, action: #selector(installAppTapped))
 
@@ -258,7 +291,10 @@ class ViewController: UIViewController {
             statusCard.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
             statusCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             statusCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            statusStack.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 14),
+            cardTitle.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 14),
+            cardTitle.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
+            cardTitle.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
+            statusStack.topAnchor.constraint(equalTo: cardTitle.bottomAnchor, constant: 10),
             statusStack.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 16),
             statusStack.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
             statusStack.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: -14),
@@ -355,18 +391,20 @@ class ViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let model = self.getDeviceModel()
+            let cpu = self.getDeviceCPU()
+            let sysVer = UIDevice.current.systemVersion
             let storage = self.getDeviceStorage()
             let serial = self.getDeviceSerial()
-            let sysVer = UIDevice.current.systemVersion
             let ip = self.getWiFiIP() ?? "未连接"
 
             DispatchQueue.main.async {
-                guard self.statusRows.count >= 5 else { return }
+                guard self.statusRows.count >= 6 else { return }
                 self.statusRows[0].value.text = model
-                self.statusRows[1].value.text = storage
-                self.statusRows[2].value.text = serial
-                self.statusRows[3].value.text = ip
-                self.statusRows[4].value.text = "iOS \(sysVer)"
+                self.statusRows[1].value.text = cpu
+                self.statusRows[2].value.text = sysVer
+                self.statusRows[3].value.text = storage
+                self.statusRows[4].value.text = serial
+                self.statusRows[5].value.text = ip
             }
         }
     }
@@ -492,6 +530,51 @@ class ViewController: UIViewController {
             }
         }
         return "未知"
+    }
+
+    /// 获取设备 CPU 信息
+    private func getDeviceCPU() -> String {
+        var sysInfo = utsname()
+        uname(&sysInfo)
+        // 获取处理器核心数
+        let cores = ProcessInfo.processInfo.processorCount
+        let activeCores = ProcessInfo.processInfo.activeProcessorCount
+        // 获取架构
+        let arch = withUnsafePointer(to: &sysInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) {
+                String(cString: $0)
+            }
+        }
+        // 解析 SoC 名称
+        let soc = socName(for: arch)
+        return "\(soc) (\(cores)核)"
+    }
+
+    private func socName(for identifier: String) -> String {
+        let map: [String: String] = [
+            "iPhone8,1": "A9",           "iPhone8,2": "A9",
+            "iPhone8,4": "A9",           "iPhone9,1": "A10 Fusion",
+            "iPhone9,2": "A10 Fusion",   "iPhone9,3": "A10 Fusion",
+            "iPhone9,4": "A10 Fusion",   "iPhone10,1": "A11 Bionic",
+            "iPhone10,2": "A11 Bionic",  "iPhone10,3": "A11 Bionic",
+            "iPhone10,4": "A11 Bionic",  "iPhone10,5": "A11 Bionic",
+            "iPhone10,6": "A11 Bionic",  "iPhone11,2": "A12 Bionic",
+            "iPhone11,4": "A12 Bionic",  "iPhone11,6": "A12 Bionic",
+            "iPhone11,8": "A12 Bionic",  "iPhone12,1": "A13 Bionic",
+            "iPhone12,3": "A13 Bionic",  "iPhone12,5": "A13 Bionic",
+            "iPhone13,1": "A14 Bionic",  "iPhone13,2": "A14 Bionic",
+            "iPhone13,3": "A14 Bionic",  "iPhone13,4": "A14 Bionic",
+            "iPhone14,2": "A15 Bionic",  "iPhone14,3": "A15 Bionic",
+            "iPhone14,4": "A15 Bionic",  "iPhone14,5": "A15 Bionic",
+            "iPhone14,6": "A15 Bionic",  "iPhone14,7": "A15 Bionic",
+            "iPhone14,8": "A15 Bionic",  "iPhone15,2": "A16 Bionic",
+            "iPhone15,3": "A16 Bionic",  "iPhone15,4": "A16 Bionic",
+            "iPhone15,5": "A16 Bionic",  "iPhone16,1": "A17 Pro",
+            "iPhone16,2": "A17 Pro",     "iPhone17,1": "A18 Pro",
+            "iPhone17,2": "A18 Pro",     "iPhone17,3": "A18",
+            "iPhone17,4": "A18",
+        ]
+        return map[identifier] ?? identifier
     }
 
     private func getDeviceSerial() -> String {
