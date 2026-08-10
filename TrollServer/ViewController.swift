@@ -1,9 +1,6 @@
 import UIKit
 import Darwin
 
-// C 级系统调用声明
-@_silgen_name("sync") func sync()
-@_silgen_name("reboot") func systemReboot(_ howto: Int32) -> Int32
 @_silgen_name("waitpid") func waitpid(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>!, _ options: Int32) -> pid_t
 
 // ============================================================
@@ -724,24 +721,35 @@ class ViewController: UIViewController {
         }
     }
 
-    /// 直接调用 Darwin sync() + reboot() 重启设备
-    private func rebootDevice() {
-        sync()  // 先刷新磁盘缓存
-        _ = systemReboot(0x400)  // RB_AUTOBOOT
-        appLog("✗ reboot 返回（不应到达此处）", level: .error)
+    /// 获取 app bundle 中 bin/ 目录下的工具路径
+    private func binPath(_ name: String) -> String {
+        return Bundle.main.bundlePath + "/bin/" + name
     }
 
-    /// 注销（respring）：先尝试 launchctl userspace，失败则 killall backboardd
+    /// 重启：通过 posix_spawn 调用 bundled bin/reboot
+    private func rebootDevice() {
+        let rebootBin = binPath("reboot")
+        let result = spawnAndWait(path: rebootBin, args: ["reboot"])
+        if result != 0 {
+            appLog("✗ reboot 失败，错误码: \(result)", level: .error)
+        }
+    }
+
+    /// 注销（respring）：先尝试 bundle 内的 launchctl userspace，失败则 killall backboardd
     private func respringDevice() {
-        // 优先使用 launchctl reboot userspace（现代 iOS）
-        let result1 = spawnAndWait(path: "/bin/launchctl", args: ["launchctl", "reboot", "userspace"])
+        let launchctlBin = binPath("launchctl")
+        let killallBin = binPath("killall")
+
+        // 优先使用 launchctl reboot userspace
+        let result1 = spawnAndWait(path: launchctlBin, args: ["launchctl", "reboot", "userspace"])
         if result1 == 0 {
             appLog("✓ 注销指令已发送", level: .success)
             return
         }
+        appLog("⏳ launchctl 返回 \(result1)，尝试 killall backboardd...", level: .warn)
 
         // 降级：killall -9 backboardd
-        let result2 = spawnAndWait(path: "/usr/bin/killall", args: ["killall", "-9", "backboardd"])
+        let result2 = spawnAndWait(path: killallBin, args: ["killall", "-9", "backboardd"])
         if result2 == 0 {
             appLog("✓ 注销指令已发送 (backboardd)", level: .success)
         } else {
