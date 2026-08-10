@@ -194,6 +194,20 @@ class InstallAPI {
         task.resume()
     }
 
+    // MARK: - 公开安装方法（供 ViewController 直接调用）
+
+    /// 安装本地 IPA 文件，回调在主线程
+    func installFromLocalPath(_ path: String, completion: @escaping (Bool, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion(false, "Internal error") }
+                return
+            }
+            let result = self.installIPA(at: path)
+            DispatchQueue.main.async { completion(result.success, result.message) }
+        }
+    }
+
     // MARK: - IPA 安装
 
     private func installIPA(at path: String) -> (success: Bool, message: String) {
