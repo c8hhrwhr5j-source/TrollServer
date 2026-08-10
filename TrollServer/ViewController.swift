@@ -51,9 +51,9 @@ class ViewController: UIViewController {
     private let hideFloatBtn = UIButton(type: .system)
     private let showFloatBtn = UIButton(type: .system)
 
-    // 重启/注销
+    // 重启/关机
     private let rebootBtn   = UIButton(type: .system)
-    private let respringBtn = UIButton(type: .system)
+    private let shutdownBtn = UIButton(type: .system)
 
     // 下载安装
     private let downloadBtn = UIButton(type: .system)
@@ -240,11 +240,11 @@ class ViewController: UIViewController {
         setupButton(showFloatBtn, title: "显示悬浮", color: .systemBlue, action: #selector(sendShowFloat))
         let floatRow = makeButtonRow([hideFloatBtn, showFloatBtn])
 
-        // ---- 重启 / 注销 ----
+        // ---- 重启 / 关机 ----
         let systemLabel = makeSectionLabel("设备电源控制")
         setupButton(rebootBtn,   title: "重启设备", color: UIColor(red: 0.9, green: 0.45, blue: 0.0, alpha: 1.0), action: #selector(rebootTapped))
-        setupButton(respringBtn, title: "注销设备",     color: UIColor(red: 0.3, green: 0.3, blue: 0.8, alpha: 1.0), action: #selector(respringTapped))
-        let systemRow = makeButtonRow([rebootBtn, respringBtn])
+        setupButton(shutdownBtn, title: "关闭设备", color: UIColor(red: 0.3, green: 0.3, blue: 0.8, alpha: 1.0), action: #selector(shutdownTapped))
+        let systemRow = makeButtonRow([rebootBtn, shutdownBtn])
 
         // ---- 下载应用按钮 ----
         let downloadLabel = makeSectionLabel("下载安装最新应用脚本")
@@ -704,7 +704,7 @@ class ViewController: UIViewController {
     @objc private func sendShowFloat() { sendFloatCommand("1", "100",  chineseName: "显示悬浮窗") }
 
     // ============================================================
-    // MARK: - 重启 / 注销
+    // MARK: - 重启 / 关机
     // ============================================================
 
     private func performRebootAction(_ action: String, displayName: String) {
@@ -727,8 +727,8 @@ class ViewController: UIViewController {
         case "reboot":
             rebootDevice()
 
-        case "respring":
-            respringDevice()
+        case "shutdown":
+            shutdownDevice()
 
         default:
             break
@@ -762,27 +762,19 @@ class ViewController: UIViewController {
         appLog("✓ 重启指令已发送 (FBSSystemService)", level: .success)
     }
 
-    /// 注销（respring）：先尝试 bundle 内的 launchctl userspace，失败则 killall backboardd
-    private func respringDevice() {
-        let launchctlBin = binPath("launchctl")
-        let killallBin = binPath("killall")
-
-        // 优先使用 launchctl reboot userspace
-        let result1 = spawnAndWait(path: launchctlBin, args: ["launchctl", "reboot", "userspace"])
-        if result1 == 0 {
-            appLog("✓ 注销指令已发送", level: .success)
+    /// 关机：FBSSystemService.shutdown
+    private func shutdownDevice() {
+        guard let cls = NSClassFromString("FBSSystemService") as? NSObject.Type,
+              let svc = cls.value(forKey: "sharedService") as? NSObject else {
+            appLog("✗ 无法加载 FBSSystemService", level: .error)
             return
         }
-        appLog("⏳ launchctl 返回 \(result1)，尝试 killall backboardd...", level: .warn)
-
-        // 降级：killall -9 backboardd
-        let result2 = spawnAndWait(path: killallBin, args: ["killall", "-9", "backboardd"])
-        if result2 == 0 {
-            appLog("✓ 注销指令已发送 (backboardd)", level: .success)
-        } else {
-            appLog("✗ 注销失败，错误码: \(result2)", level: .error)
-        }
+        svc.perform(NSSelectorFromString("shutdown"))
+        appLog("✓ 关机指令已发送 — 设备正在关机", level: .success)
     }
+
+    @objc private func rebootTapped()   { performRebootAction("reboot",   displayName: "重启") }
+    @objc private func shutdownTapped() { performRebootAction("shutdown", displayName: "关机") }
 
     /// 以 root 权限 spawn 子进程（需要 com.apple.private.persona-mgmt 权限）
     private func spawnAndWait(path: String, args: [String]) -> Int32 {
