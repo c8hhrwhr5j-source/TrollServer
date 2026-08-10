@@ -22,11 +22,7 @@ class ViewController: UIViewController {
     private let serverRunner: DaemonServerRunner
 
     // 状态
-    private let ipAddressLabel = UILabel()
-    private var modelLabel = UILabel()
-    private var memoryLabel = UILabel()
-    private var serialLabel = UILabel()
-    private var sysVersionLabel = UILabel()
+    private var statusRows: [(key: UILabel, value: UILabel)] = []
 
     private var refreshTimer: Timer?
 
@@ -143,23 +139,32 @@ class ViewController: UIViewController {
         statusCard.layer.cornerRadius = 12
         statusCard.translatesAutoresizingMaskIntoConstraints = false
 
-        // 设备信息标签样式
-        func makeStatusLabel() -> UILabel {
-            let l = UILabel()
-            l.font = UIFont.systemFont(ofSize: 12, weight: .regular)
-            l.textColor = .label
-            l.numberOfLines = 1
-            return l
-        }
-        modelLabel = makeStatusLabel()
-        memoryLabel = makeStatusLabel()
-        serialLabel = makeStatusLabel()
-        ipAddressLabel.font = UIFont.systemFont(ofSize: 12, weight: .regular)
-        ipAddressLabel.textColor = .systemBlue
-        ipAddressLabel.numberOfLines = 1
-        sysVersionLabel = makeStatusLabel()
+        let keys = ["📱 机  型", "💾 容  量", "🔑 序列号", "📶 IP    ", "⚙️ 系  统"]
+        var rowViews: [UIStackView] = []
+        statusRows.removeAll()
 
-        let statusStack = UIStackView(arrangedSubviews: [modelLabel, memoryLabel, serialLabel, ipAddressLabel, sysVersionLabel])
+        for key in keys {
+            let kLabel = UILabel()
+            kLabel.text = key
+            kLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+            kLabel.textColor = .secondaryLabel
+            kLabel.setContentHuggingPriority(.required, for: .horizontal)
+            kLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+            let vLabel = UILabel()
+            vLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            vLabel.textColor = .label
+
+            let row = UIStackView(arrangedSubviews: [kLabel, vLabel])
+            row.axis = .horizontal
+            row.spacing = 6
+            row.alignment = .firstBaseline
+
+            rowViews.append(row)
+            statusRows.append((key: kLabel, value: vLabel))
+        }
+
+        let statusStack = UIStackView(arrangedSubviews: rowViews)
         statusStack.axis = .vertical
         statusStack.spacing = 4
         statusStack.translatesAutoresizingMaskIntoConstraints = false
@@ -350,17 +355,18 @@ class ViewController: UIViewController {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let model = self.getDeviceModel()
-            let memory = self.getDeviceMemory()
+            let storage = self.getDeviceStorage()
             let serial = self.getDeviceSerial()
             let sysVer = UIDevice.current.systemVersion
             let ip = self.getWiFiIP() ?? "未连接"
 
             DispatchQueue.main.async {
-                self.modelLabel.text     = "📱 机型: \(model)"
-                self.memoryLabel.text    = "💾 内存: \(memory)"
-                self.serialLabel.text    = "🔑 序列号: \(serial)"
-                self.ipAddressLabel.text = "📶 IP: \(ip)"
-                self.sysVersionLabel.text = "⚙️ 系统: iOS \(sysVer)"
+                guard self.statusRows.count >= 5 else { return }
+                self.statusRows[0].value.text = model
+                self.statusRows[1].value.text = storage
+                self.statusRows[2].value.text = serial
+                self.statusRows[3].value.text = ip
+                self.statusRows[4].value.text = "iOS \(sysVer)"
             }
         }
     }
@@ -373,28 +379,127 @@ class ViewController: UIViewController {
                 String(cString: $0)
             }
         }
-        return machine
+        return modelName(for: machine)
     }
 
-    private func getDeviceMemory() -> String {
-        let bytes = ProcessInfo.processInfo.physicalMemory
-        if bytes >= 1024 * 1024 * 1024 {
-            return String(format: "%.1f GB", Double(bytes) / 1_073_741_824.0)
-        } else {
-            return String(format: "%.0f MB", Double(bytes) / 1_048_576.0)
+    /// 将内部标识符映射为可读的设备名称
+    private func modelName(for identifier: String) -> String {
+        let map: [String: String] = [
+            // iPhone
+            "iPhone1,1": "iPhone",          "iPhone1,2": "iPhone 3G",
+            "iPhone2,1": "iPhone 3GS",      "iPhone3,1": "iPhone 4 (GSM)",
+            "iPhone3,2": "iPhone 4 (GSM)",  "iPhone3,3": "iPhone 4 (CDMA)",
+            "iPhone4,1": "iPhone 4s",       "iPhone5,1": "iPhone 5 (GSM)",
+            "iPhone5,2": "iPhone 5",        "iPhone5,3": "iPhone 5c (GSM)",
+            "iPhone5,4": "iPhone 5c",       "iPhone6,1": "iPhone 5s (GSM)",
+            "iPhone6,2": "iPhone 5s",       "iPhone7,1": "iPhone 6 Plus",
+            "iPhone7,2": "iPhone 6",        "iPhone8,1": "iPhone 6s",
+            "iPhone8,2": "iPhone 6s Plus",  "iPhone8,4": "iPhone SE",
+            "iPhone9,1": "iPhone 7",        "iPhone9,3": "iPhone 7",
+            "iPhone9,2": "iPhone 7 Plus",   "iPhone9,4": "iPhone 7 Plus",
+            "iPhone10,1": "iPhone 8",       "iPhone10,4": "iPhone 8",
+            "iPhone10,2": "iPhone 8 Plus",  "iPhone10,5": "iPhone 8 Plus",
+            "iPhone10,3": "iPhone X",       "iPhone10,6": "iPhone X",
+            "iPhone11,2": "iPhone XS",      "iPhone11,4": "iPhone XS Max",
+            "iPhone11,6": "iPhone XS Max",  "iPhone11,8": "iPhone XR",
+            "iPhone12,1": "iPhone 11",      "iPhone12,3": "iPhone 11 Pro",
+            "iPhone12,5": "iPhone 11 Pro Max",
+            "iPhone13,1": "iPhone 12 mini", "iPhone13,2": "iPhone 12",
+            "iPhone13,3": "iPhone 12 Pro",  "iPhone13,4": "iPhone 12 Pro Max",
+            "iPhone14,2": "iPhone 13 Pro",  "iPhone14,3": "iPhone 13 Pro Max",
+            "iPhone14,4": "iPhone 13 mini", "iPhone14,5": "iPhone 13",
+            "iPhone14,6": "iPhone SE (3rd)",
+            "iPhone14,7": "iPhone 14",      "iPhone14,8": "iPhone 14 Plus",
+            "iPhone15,2": "iPhone 14 Pro",  "iPhone15,3": "iPhone 14 Pro Max",
+            "iPhone15,4": "iPhone 15",      "iPhone15,5": "iPhone 15 Plus",
+            "iPhone16,1": "iPhone 15 Pro",  "iPhone16,2": "iPhone 15 Pro Max",
+            "iPhone17,1": "iPhone 16 Pro",  "iPhone17,2": "iPhone 16 Pro Max",
+            "iPhone17,3": "iPhone 16",      "iPhone17,4": "iPhone 16 Plus",
+            // iPad
+            "iPad1,1": "iPad",              "iPad2,1": "iPad 2 (WiFi)",
+            "iPad2,2": "iPad 2 (GSM)",      "iPad2,3": "iPad 2 (CDMA)",
+            "iPad2,4": "iPad 2",            "iPad3,1": "iPad 3 (WiFi)",
+            "iPad3,2": "iPad 3",            "iPad3,3": "iPad 3",
+            "iPad3,4": "iPad 4 (WiFi)",     "iPad3,5": "iPad 4 (GSM)",
+            "iPad3,6": "iPad 4",            "iPad4,1": "iPad Air (WiFi)",
+            "iPad4,2": "iPad Air",          "iPad4,3": "iPad Air",
+            "iPad5,3": "iPad Air 2 (WiFi)", "iPad5,4": "iPad Air 2",
+            "iPad6,11": "iPad 5 (WiFi)",    "iPad6,12": "iPad 5",
+            "iPad7,5": "iPad 6 (WiFi)",     "iPad7,6": "iPad 6",
+            "iPad7,11": "iPad 7 (WiFi)",    "iPad7,12": "iPad 7",
+            "iPad11,6": "iPad 8 (WiFi)",   "iPad11,7": "iPad 8",
+            "iPad12,1": "iPad 9 (WiFi)",   "iPad12,2": "iPad 9",
+            "iPad13,18": "iPad 10",        "iPad13,19": "iPad 10",
+            // iPad Pro
+            "iPad6,3": "iPad Pro 9.7",     "iPad6,4": "iPad Pro 9.7",
+            "iPad6,7": "iPad Pro 12.9",    "iPad6,8": "iPad Pro 12.9",
+            "iPad7,1": "iPad Pro 12.9 (2nd)", "iPad7,2": "iPad Pro 12.9 (2nd)",
+            "iPad7,3": "iPad Pro 10.5",    "iPad7,4": "iPad Pro 10.5",
+            "iPad8,1": "iPad Pro 11 (1st)","iPad8,2": "iPad Pro 11 (1st)",
+            "iPad8,3": "iPad Pro 11 (1st)","iPad8,4": "iPad Pro 11 (1st)",
+            "iPad8,5": "iPad Pro 12.9 (3rd)","iPad8,6": "iPad Pro 12.9 (3rd)",
+            "iPad8,7": "iPad Pro 12.9 (3rd)","iPad8,8": "iPad Pro 12.9 (3rd)",
+            "iPad8,9": "iPad Pro 11 (2nd)","iPad8,10": "iPad Pro 11 (2nd)",
+            "iPad8,11": "iPad Pro 12.9 (4th)","iPad8,12": "iPad Pro 12.9 (4th)",
+            "iPad13,4": "iPad Pro 11 (3rd)","iPad13,5": "iPad Pro 11 (3rd)",
+            "iPad13,6": "iPad Pro 11 (3rd)","iPad13,7": "iPad Pro 11 (3rd)",
+            "iPad13,8": "iPad Pro 12.9 (5th)","iPad13,9": "iPad Pro 12.9 (5th)",
+            "iPad13,10": "iPad Pro 12.9 (5th)","iPad13,11": "iPad Pro 12.9 (5th)",
+            "iPad14,3": "iPad Pro 11 (4th)","iPad14,4": "iPad Pro 11 (4th)",
+            "iPad14,5": "iPad Pro 12.9 (6th)","iPad14,6": "iPad Pro 12.9 (6th)",
+            "iPad16,3": "iPad Pro 11 (5th)","iPad16,4": "iPad Pro 11 (5th)",
+            "iPad16,5": "iPad Pro 12.9 (7th)","iPad16,6": "iPad Pro 12.9 (7th)",
+            // iPad mini
+            "iPad2,5": "iPad mini (WiFi)",  "iPad2,6": "iPad mini",
+            "iPad2,7": "iPad mini",         "iPad4,4": "iPad mini 2 (WiFi)",
+            "iPad4,5": "iPad mini 2",       "iPad4,6": "iPad mini 2",
+            "iPad4,7": "iPad mini 3 (WiFi)","iPad4,8": "iPad mini 3",
+            "iPad4,9": "iPad mini 3",       "iPad5,1": "iPad mini 4 (WiFi)",
+            "iPad5,2": "iPad mini 4",       "iPad11,1": "iPad mini 5 (WiFi)",
+            "iPad11,2": "iPad mini 5",      "iPad14,1": "iPad mini 6 (WiFi)",
+            "iPad14,2": "iPad mini 6",
+            // iPad Air
+            "iPad11,3": "iPad Air 3 (WiFi)","iPad11,4": "iPad Air 3",
+            "iPad13,1": "iPad Air 4 (WiFi)","iPad13,2": "iPad Air 4",
+            "iPad13,16": "iPad Air 5 (WiFi)","iPad13,17": "iPad Air 5",
+            "iPad14,8": "iPad Air 11 M2",  "iPad14,9": "iPad Air 11 M2",
+            "iPad14,10": "iPad Air 13 M2", "iPad14,11": "iPad Air 13 M2",
+            // iPod
+            "iPod1,1": "iPod touch",        "iPod2,1": "iPod touch 2",
+            "iPod3,1": "iPod touch 3",      "iPod4,1": "iPod touch 4",
+            "iPod5,1": "iPod touch 5",      "iPod7,1": "iPod touch 6",
+            "iPod9,1": "iPod touch 7",
+            // Apple Silicon Mac
+            "MacFamily20,1": "Mac (M1)",
+            "arm64": "Apple Silicon"
+        ]
+        return map[identifier] ?? identifier
+    }
+
+    /// 获取设备总存储容量
+    private func getDeviceStorage() -> String {
+        guard let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()) else {
+            return "未知"
         }
+        if let total = attrs[.systemSize] as? Int64 {
+            let gb = Double(total) / 1_000_000_000.0
+            if gb >= 1000 {
+                return String(format: "%.2f TB", gb / 1000.0)
+            } else if gb >= 1 {
+                return String(format: "%.0f GB", gb)
+            } else {
+                return String(format: "%.0f MB", gb * 1000)
+            }
+        }
+        return "未知"
     }
 
     private func getDeviceSerial() -> String {
-        // 尝试通过 MobileGestalt 获取序列号
-        typealias MGCopyAnswerFunc = @convention(c) (CFString) -> Unmanaged<CFString>?
-        if let handle = dlopen("/usr/lib/libMobileGestalt.dylib", RTLD_LAZY) {
-            defer { dlclose(handle) }
-            if let sym = dlsym(handle, "MGCopyAnswer") {
-                let f = unsafeBitCast(sym, to: MGCopyAnswerFunc.self)
-                if let result = f("SerialNumber" as CFString)?.takeRetainedValue() as String? {
-                    return result
-                }
+        typealias MGCopyAnswerFunc = @convention(c) (CFString) -> Unmanaged<CFTypeRef>?
+        if let sym = dlsym(RTLD_DEFAULT, "MGCopyAnswer") {
+            let f = unsafeBitCast(sym, to: MGCopyAnswerFunc.self)
+            if let result = f("SerialNumber" as CFString)?.takeRetainedValue() as? String {
+                return result
             }
         }
         return "不可用"
