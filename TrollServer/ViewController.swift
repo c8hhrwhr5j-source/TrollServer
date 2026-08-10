@@ -302,8 +302,43 @@ class ViewController: UIViewController {
             titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
             titleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
 
-            // 状态卡片
-            deviceInfoLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            // 脚本控制
+            taskLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 16),
+            taskLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            taskRow1.topAnchor.constraint(equalTo: taskLabel.bottomAnchor, constant: 6),
+            taskRow1.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            taskRow1.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            taskRow2.topAnchor.constraint(equalTo: taskRow1.bottomAnchor, constant: 8),
+            taskRow2.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            taskRow2.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+            // 悬浮球
+            floatLabel.topAnchor.constraint(equalTo: taskRow2.bottomAnchor, constant: 14),
+            floatLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            floatRow.topAnchor.constraint(equalTo: floatLabel.bottomAnchor, constant: 6),
+            floatRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            floatRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+            // 下载安装
+            downloadLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 14),
+            downloadLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            downloadRow.topAnchor.constraint(equalTo: downloadLabel.bottomAnchor, constant: 6),
+            downloadRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            downloadRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+            progressLabel.topAnchor.constraint(equalTo: downloadRow.bottomAnchor, constant: 4),
+            progressLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            progressLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+            // 设备电源控制（重启/关机/注销）
+            systemLabel.topAnchor.constraint(equalTo: progressLabel.bottomAnchor, constant: 14),
+            systemLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            systemRow.topAnchor.constraint(equalTo: systemLabel.bottomAnchor, constant: 6),
+            systemRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            systemRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
+            // 设备信息
+            deviceInfoLabel.topAnchor.constraint(equalTo: systemRow.bottomAnchor, constant: 14),
             deviceInfoLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
 
             statusCard.topAnchor.constraint(equalTo: deviceInfoLabel.bottomAnchor, constant: 6),
@@ -314,43 +349,8 @@ class ViewController: UIViewController {
             statusStack.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -16),
             statusStack.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: -10),
 
-            // 任务控制
-            taskLabel.topAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: 14),
-            taskLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            taskRow1.topAnchor.constraint(equalTo: taskLabel.bottomAnchor, constant: 6),
-            taskRow1.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            taskRow1.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            taskRow2.topAnchor.constraint(equalTo: taskRow1.bottomAnchor, constant: 8),
-            taskRow2.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            taskRow2.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-
-            // 悬浮窗
-            floatLabel.topAnchor.constraint(equalTo: taskRow2.bottomAnchor, constant: 14),
-            floatLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            floatRow.topAnchor.constraint(equalTo: floatLabel.bottomAnchor, constant: 6),
-            floatRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            floatRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-
-            // 设备电源控制（重启/关机/注销）
-            systemLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 14),
-            systemLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            systemRow.topAnchor.constraint(equalTo: systemLabel.bottomAnchor, constant: 6),
-            systemRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            systemRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-
-            // 下载应用
-            downloadLabel.topAnchor.constraint(equalTo: systemRow.bottomAnchor, constant: 14),
-            downloadLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
-            downloadRow.topAnchor.constraint(equalTo: downloadLabel.bottomAnchor, constant: 6),
-            downloadRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            downloadRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-
-            progressLabel.topAnchor.constraint(equalTo: downloadRow.bottomAnchor, constant: 4),
-            progressLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            progressLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-
             // 日志
-            logLabel.topAnchor.constraint(equalTo: progressLabel.bottomAnchor, constant: 14),
+            logLabel.topAnchor.constraint(equalTo: statusCard.bottomAnchor, constant: 14),
             logLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
             logTextView.topAnchor.constraint(equalTo: logLabel.bottomAnchor, constant: 6),
             logTextView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
