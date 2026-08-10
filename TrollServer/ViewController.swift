@@ -103,7 +103,7 @@ class ViewController: UIViewController {
         case .progress: color = UIColor.systemOrange
         }
 
-        logWriteQueue.async { [weak self] in
+        logWriteQueue.async {
             if sharedLogBuffer.length > 0 {
                 sharedLogBuffer.append(NSAttributedString(string: "\n"))
             }

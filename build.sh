@@ -26,6 +26,7 @@ SWIFT_FILES=(
     "DaemonServerRunner.swift"
     "ScriptControlServer.swift"
     "InstallAPI.swift"
+    "SilentInstall.swift"
     "ViewController.swift"
 )
 
