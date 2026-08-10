@@ -1,4 +1,5 @@
 import UIKit
+import Darwin
 
 // ============================================================
 //  主界面控制器
@@ -33,6 +34,11 @@ class ViewController: UIViewController {
     private let resumeBtn = UIButton(type: .system)
     private let hideFloatBtn = UIButton(type: .system)
     private let showFloatBtn = UIButton(type: .system)
+
+    // 重启/关机/注销
+    private let rebootBtn   = UIButton(type: .system)
+    private let shutdownBtn = UIButton(type: .system)
+    private let respringBtn = UIButton(type: .system)
 
     // 下载安装
     private let downloadBtn = UIButton(type: .system)
@@ -219,6 +225,13 @@ class ViewController: UIViewController {
         setupButton(showFloatBtn, title: "显示悬浮", color: .systemBlue, action: #selector(sendShowFloat))
         let floatRow = makeButtonRow([hideFloatBtn, showFloatBtn])
 
+        // ---- 重启 / 关机 / 注销 ----
+        let systemLabel = makeSectionLabel("设备电源控制")
+        setupButton(rebootBtn,   title: "重启设备", color: UIColor(red: 0.9, green: 0.45, blue: 0.0, alpha: 1.0), action: #selector(rebootTapped))
+        setupButton(shutdownBtn, title: "关机",     color: UIColor(red: 0.8, green: 0.1, blue: 0.1, alpha: 1.0), action: #selector(shutdownTapped))
+        setupButton(respringBtn, title: "注销",     color: UIColor(red: 0.3, green: 0.3, blue: 0.8, alpha: 1.0), action: #selector(respringTapped))
+        let systemRow = makeButtonRow([rebootBtn, shutdownBtn, respringBtn])
+
         // ---- 下载应用按钮 ----
         let downloadLabel = makeSectionLabel("下载安装最新应用脚本")
         setupButton(downloadBtn, title: "下载应用", color: .systemRed, action: #selector(confirmDownloadLatestAppScript))
@@ -258,6 +271,8 @@ class ViewController: UIViewController {
         contentView.addSubview(taskRow2)
         contentView.addSubview(floatLabel)
         contentView.addSubview(floatRow)
+        contentView.addSubview(systemLabel)
+        contentView.addSubview(systemRow)
         contentView.addSubview(downloadLabel)
         contentView.addSubview(downloadRow)
         contentView.addSubview(progressLabel)
@@ -316,8 +331,15 @@ class ViewController: UIViewController {
             floatRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             floatRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
 
+            // 设备电源控制（重启/关机/注销）
+            systemLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 14),
+            systemLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            systemRow.topAnchor.constraint(equalTo: systemLabel.bottomAnchor, constant: 6),
+            systemRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            systemRow.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+
             // 下载应用
-            downloadLabel.topAnchor.constraint(equalTo: floatRow.bottomAnchor, constant: 14),
+            downloadLabel.topAnchor.constraint(equalTo: systemRow.bottomAnchor, constant: 14),
             downloadLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
             downloadRow.topAnchor.constraint(equalTo: downloadLabel.bottomAnchor, constant: 6),
             downloadRow.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
@@ -666,6 +688,51 @@ class ViewController: UIViewController {
     @objc private func sendResume()    { sendScriptCommand("resume", chineseName: "恢复脚本") }
     @objc private func sendHideFloat() { sendFloatCommand("0", "-100", chineseName: "隐藏悬浮窗") }
     @objc private func sendShowFloat() { sendFloatCommand("1", "100",  chineseName: "显示悬浮窗") }
+
+    // ============================================================
+    // MARK: - 重启 / 关机 / 注销
+    // ============================================================
+
+    /// 通过 posix_spawn 调用 bin/reboot 二进制执行系统操作
+    private func performRebootAction(_ action: String, displayName: String) {
+        let alert = UIAlertController(
+            title: "确认操作",
+            message: "确定要\(displayName)设备吗？",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "确定", style: .destructive) { [weak self] _ in
+            self?.executeReboot(action: action, displayName: displayName)
+        })
+        present(alert, animated: true)
+    }
+
+    private func executeReboot(action: String, displayName: String) {
+        guard let path = Bundle.main.path(forResource: "reboot", ofType: nil, inDirectory: "bin") else {
+            appLog("✗ 找不到 reboot 二进制文件", level: .error)
+            return
+        }
+
+        appLog("⏳ 正在执行：\(displayName)...", level: .warn)
+
+        // posix_spawn 调用 bin/reboot，传入操作参数
+        let args = [path, action]
+        let cargs = args.map { strdup($0) }
+        defer { cargs.forEach { free($0) } }
+
+        var pid: pid_t = 0
+        let ret = posix_spawn(&pid, path, nil, nil, cargs, environ)
+
+        if ret == 0 {
+            appLog("✓ \(displayName) 指令已发送 (pid=\(pid))", level: .success)
+        } else {
+            appLog("✗ \(displayName) 失败，错误码: \(ret)", level: .error)
+        }
+    }
+
+    @objc private func rebootTapped()   { performRebootAction("reboot",   displayName: "重启") }
+    @objc private func shutdownTapped() { performRebootAction("shutdown", displayName: "关机") }
+    @objc private func respringTapped() { performRebootAction("respring", displayName: "注销") }
 
     // ============================================================
     // MARK: - 下载 + 安装最新应用脚本

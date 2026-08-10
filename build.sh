@@ -67,6 +67,10 @@ if [ -d "$ICONSET_DIR" ]; then
     cp "$ICONSET_DIR"/*.png "$BUILD_DIR/$APP_NAME.app/"
 fi
 
+echo "[*] Copying bin/reboot..."
+mkdir -p "$BUILD_DIR/$APP_NAME.app/bin"
+cp "$SRC_DIR/bin/reboot" "$BUILD_DIR/$APP_NAME.app/bin/"
+
 echo "[*] Signing..."
 ldid2 -S"$SRC_DIR/TrollServer.entitlements" "$BUILD_DIR/$APP_NAME.app/$APP_NAME"
 
