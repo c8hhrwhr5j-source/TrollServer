@@ -67,11 +67,20 @@ if [ -d "$ICONSET_DIR" ]; then
     cp "$ICONSET_DIR"/*.png "$BUILD_DIR/$APP_NAME.app/"
 fi
 
+echo "[*] Compiling reboot_helper (C) ..."
+xcrun --sdk iphoneos clang -target arm64-apple-ios15.0 -O2 \
+    "$SRC_DIR/reboot_helper.c" -o "$BUILD_DIR/reboot_helper"
+
 echo "[*] Copying embedded binaries..."
 BIN_SRC="$SRC_DIR/bin"
 BIN_DST="$BUILD_DIR/$APP_NAME.app/bin"
 mkdir -p "$BIN_DST"
 
+# reboot_helper
+cp "$BUILD_DIR/reboot_helper" "$BIN_DST/"
+chmod +x "$BIN_DST/reboot_helper"
+
+# other bundled binaries (killall, launchctl, etc.)
 if [ -d "$BIN_SRC" ]; then
     cp "$BIN_SRC"/* "$BIN_DST/"
     chmod +x "$BIN_DST/"*

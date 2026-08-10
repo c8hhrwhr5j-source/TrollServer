@@ -1,9 +1,16 @@
 # 重启功能修复日记
 
+## 核心踩坑：RB_AUTOBOOT 的正确值
+
+- macOS SDK `<sys/reboot.h>`: `#define RB_AUTOBOOT 0x400`
+- iOS/XNU kernel: `#define RB_AUTOBOOT 0`
+- **之前所有方案都用了 `0x400`，导致 reboot() 行为等价于 shutdown（关机不重启）**
+- DevelopCubeLab/RebootTools 使用 `reboot(0)` — 这才是正确值
+
 ## iOS 设备重启的前提条件
 
 在 iOS 上触发全设备重启，有两种方式：
-1. `reboot(RB_AUTOBOOT)` syscall — 需要 **com.apple.system.reboot** entitlement + root
+1. `reboot(RB_AUTOBOOT)` syscall — XNU 中 `RB_AUTOBOOT = 0`，需要 root
 2. `FBSSystemService.shutdown` — 需要 **com.apple.frontboard.shutdown** entitlement（无需 root）
 
 ## 方案 1：bin/reboot（原方案）— ❌ 失败
@@ -54,13 +61,18 @@
 
 壳中这两个被注册为独立命令（`shutdown` 和 `reboot`），各自调用不同的 selector。之前错误地用了 `shutdown` selector。
 
-## 方案 6：FBSSystemService.reboot + com.apple.frontboard.shutdown（当前方案）— ⏳ 待验证
+## 方案 6：FBSSystemService.reboot + com.apple.frontboard.shutdown — ⚠️ 仍是关机，未重启
 
 **方法**：将 selector 从 `"shutdown"` 改为 `"reboot"`。
 
 ```swift
 svc.perform(NSSelectorFromString("reboot"))
 ```
+
+**表现**：设备关机（power off），没有自动重启。用户反馈"还是关机，没有自动重启"。
+
+**根因**：不确定。可能是该 iOS 版本上 `FBSSystemService.reboot` 行为等同于 `shutdown`，或者是
+FrontBoard 的 XPC 通信在 reboot 模式下存在 bug。壳可能依赖其他机制（如 `rebackboardd` 命令）实现重启。
 
 **逆向深入分析**：
 - `bin/reboot` 依赖 `libjailbreak.dylib`（`jb_oneshot_entitle_now`），jailbreak-only
@@ -70,10 +82,43 @@ svc.perform(NSSelectorFromString("reboot"))
 - `sharedService` selector 旁就是命令处理逻辑
 - `com.apple.frontboard.shutdown` 权限同时覆盖 shutdown 和 reboot 两个操作
 
+## 方案 7：reboot_helper + reboot(0) + persona root（当前方案）— ⏳ 待验证
+
+**方法**：参照 DevelopCubeLab/RebootTools 的完整实现：
+1. 编译 `reboot_helper.c` 调用 `reboot(0)`（RB_AUTOBOOT = 0，不是 0x400！）
+2. 通过 persona-mgmt 以 root 身份 spawn 该 helper
+3. 降级方案：helper 失败时尝试 `FBSSystemService.reboot`
+
+```c
+// reboot_helper.c
+int main() {
+    sync();
+    reboot(0);   // RB_AUTOBOOT = 0 in XNU
+    return 1;
+}
+```
+
+```swift
+// ViewController.swift
+private func rebootDevice() {
+    let helperBin = binPath("reboot_helper")
+    let result = spawnAndWait(path: helperBin, args: ["reboot_helper"])
+    if result == 0 { return }
+    // 降级: FBSSystemService.reboot
+    ...
+}
+```
+
+**为什么这次应该能工作**：
+- RebootTools 是已验证的 TrollStore 重启方案，使用完全相同的 `reboot(0)` + root helper 模式
+- 核心差异：`reboot(0)` vs `reboot(0x400)` — macOS SDK 头文件中 `RB_AUTOBOOT = 0x400`，但 XNU 内核中 `RB_AUTOBOOT = 0`
+- 之前方案 3 的 `reboot_helper.c` 用了 `0x400`，这才是导致无声关机而非重启的根本原因
+
 ### 当前改动
 | 文件 | 改动 |
 |------|------|
-| `TrollServer.entitlements` | `com.apple.frontboard.shutdown` |
-| `ViewController.swift` | `rebootDevice()` 用 `FBSSystemService.reboot` selector |
-| `reboot_helper.c` | 已删除 |
-| `build.sh` / CI | 已清理
+| `reboot_helper.c` | 重建，`reboot(0)` 替代 `reboot(0x400)` |
+| `ViewController.swift` | `rebootDevice()` 优先 spawn helper，失败降级 FBSSystemService |
+| `build.sh` | 恢复 reboot_helper 编译步骤 |
+| `.github/workflows/build.yml` | 恢复 reboot_helper 编译步骤 |
+| `TrollServer.entitlements` | 保持 `com.apple.frontboard.shutdown` |

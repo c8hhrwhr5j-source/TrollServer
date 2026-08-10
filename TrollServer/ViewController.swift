@@ -740,17 +740,26 @@ class ViewController: UIViewController {
         return Bundle.main.bundlePath + "/bin/" + name
     }
 
-    /// 重启：FBSSystemService.reboot + com.apple.frontboard.shutdown
+    /// 重启：spawn reboot_helper（以 root persona）+ reboot(0)
     /// 方案演进及失败原因见 REBOOT_JOURNAL.md
+    /// 方案 7（当前）：照抄 DevelopCubeLab/RebootTools — reboot(0) 而非 reboot(0x400)
     private func rebootDevice() {
+        let helperBin = binPath("reboot_helper")
+        let result = spawnAndWait(path: helperBin, args: ["reboot_helper"])
+        if result == 0 {
+            appLog("✓ 重启指令执行成功 — 设备正在重启", level: .success)
+            return
+        }
+
+        // 降级方案：FBSSystemService.reboot（某些 iOS 版本行为等同于 shutdown）
+        appLog("⏳ helper 返回 \\(result)，降级尝试 FBSSystemService.reboot...", level: .warn)
         guard let cls = NSClassFromString("FBSSystemService") as? NSObject.Type,
               let svc = cls.value(forKey: "sharedService") as? NSObject else {
             appLog("✗ 无法加载 FBSSystemService", level: .error)
             return
         }
-        appLog("⏳ 通过 FBSSystemService.reboot 重启设备...", level: .warn)
         svc.perform(NSSelectorFromString("reboot"))
-        appLog("✓ 重启指令已发送", level: .success)
+        appLog("✓ 重启指令已发送 (FBSSystemService)", level: .success)
     }
 
     /// 注销（respring）：先尝试 bundle 内的 launchctl userspace，失败则 killall backboardd
