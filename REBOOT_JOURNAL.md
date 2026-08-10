@@ -82,12 +82,14 @@ FrontBoard 的 XPC 通信在 reboot 模式下存在 bug。壳可能依赖其他�
 - `sharedService` selector 旁就是命令处理逻辑
 - `com.apple.frontboard.shutdown` 权限同时覆盖 shutdown 和 reboot 两个操作
 
-## 方案 7：reboot_helper + reboot(0) + persona root（当前方案）— ⏳ 待验证
+## 方案 7：reboot_helper + reboot(0) + persona root（当前方案）— ❌ 已确认：仍是关机
 
 **方法**：参照 DevelopCubeLab/RebootTools 的完整实现：
 1. 编译 `reboot_helper.c` 调用 `reboot(0)`（RB_AUTOBOOT = 0，不是 0x400！）
 2. 通过 persona-mgmt 以 root 身份 spawn 该 helper
-3. 降级方案：helper 失败时尝试 `FBSSystemService.reboot`
+3. 降级方案：helper 失败时尝试 `FBSSystemService.shutdown`
+
+**验证结果**：在 TrollStore 环境下，所有重启方案（1-7）最终行为均为关机，无法触发真正的设备重启。已将 UI 按钮和日志统一改为"关机"。
 
 ```c
 // reboot_helper.c
@@ -100,7 +102,7 @@ int main() {
 
 ```swift
 // ViewController.swift
-private func rebootDevice() {
+private func shutdownDevice() {
     let helperBin = binPath("reboot_helper")
     let result = spawnAndWait(path: helperBin, args: ["reboot_helper"])
     if result == 0 { return }
@@ -118,7 +120,7 @@ private func rebootDevice() {
 | 文件 | 改动 |
 |------|------|
 | `reboot_helper.c` | 重建，`reboot(0)` 替代 `reboot(0x400)` |
-| `ViewController.swift` | `rebootDevice()` 优先 spawn helper，失败降级 FBSSystemService |
+| `ViewController.swift` | `shutdownDevice()` 优先 spawn helper，失败降级 FBSSystemService.shutdown |
 | `build.sh` | 恢复 reboot_helper 编译步骤 |
 | `.github/workflows/build.yml` | 恢复 reboot_helper 编译步骤 |
 | `TrollServer.entitlements` | 保持 `com.apple.frontboard.shutdown` |
