@@ -574,7 +574,7 @@ class ViewController: UIViewController {
         uname(&sysInfo)
         // 获取处理器核心数
         let cores = ProcessInfo.processInfo.processorCount
-        let activeCores = ProcessInfo.processInfo.activeProcessorCount
+        _ = ProcessInfo.processInfo.activeProcessorCount
         // 获取架构
         let arch = withUnsafePointer(to: &sysInfo.machine) {
             $0.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) {
@@ -779,17 +779,17 @@ class ViewController: UIViewController {
 
         // 初始化 spawn 属性，设置 persona 为 root
         var attr: posix_spawnattr_t? = nil
-        posix_spawnattr_init(&attr)
-        posix_spawnattr_set_persona_np(&attr, POSIX_SPAWN_PERSONA_ID_ROOT, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE)
-        posix_spawnattr_set_persona_uid_np(&attr, 0)
-        posix_spawnattr_set_persona_gid_np(&attr, 0)
-        defer { posix_spawnattr_destroy(&attr) }
+        _ = posix_spawnattr_init(&attr)
+        _ = posix_spawnattr_set_persona_np(&attr, POSIX_SPAWN_PERSONA_ID_ROOT, POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE)
+        _ = posix_spawnattr_set_persona_uid_np(&attr, 0)
+        _ = posix_spawnattr_set_persona_gid_np(&attr, 0)
+        defer { _ = posix_spawnattr_destroy(&attr) }
 
         var pid: pid_t = 0
         let ret = posix_spawn(&pid, path, nil, &attr, cargs, environ)
         guard ret == 0 else { return ret }
         var status: Int32 = 0
-        waitpid(pid, &status, 0)
+        _ = waitpid(pid, &status, 0)
         // 返回子进程实际退出码
         if WIFEXITED(status) {
             return WEXITSTATUS(status)

@@ -61,27 +61,8 @@ func inflateEnd(_ strm: UnsafeMutablePointer<z_stream>!) -> Int32
 
 // ============================================================
 //  posix_spawnattr_set_persona_* 私有 API 声明
-//  这些函数在 iOS SDK 中不公开，需要手动桥接
+//  已统一移至 ViewController.swift，此处不再重复声明
 // ============================================================
-
-@_silgen_name("posix_spawnattr_set_persona_np")
-private func posix_spawnattr_set_persona_np(
-    _ attr: UnsafeMutablePointer<posix_spawnattr_t?>!,
-    _ persona: UnsafePointer<UInt64>!,
-    _ flags: UInt32
-) -> Int32
-
-@_silgen_name("posix_spawnattr_set_persona_uid_np")
-private func posix_spawnattr_set_persona_uid_np(
-    _ attr: UnsafeMutablePointer<posix_spawnattr_t?>!,
-    _ uid: UnsafePointer<uid_t>!
-) -> Int32
-
-@_silgen_name("posix_spawnattr_set_persona_gid_np")
-private func posix_spawnattr_set_persona_gid_np(
-    _ attr: UnsafeMutablePointer<posix_spawnattr_t?>!,
-    _ gid: UnsafePointer<gid_t>!
-) -> Int32
 
 // ============================================================
 //  巨魔环境下静默安装 IPA 功能模块
@@ -428,7 +409,7 @@ class SilentInstall {
         }
         guard status == Z_OK else { return nil }
         status = inflate(&stream, Z_FINISH)
-        inflateEnd(&stream)
+        _ = inflateEnd(&stream)
         guard status == Z_STREAM_END else { return nil }
         output.count = Int(stream.total_out)
         return output
@@ -945,25 +926,19 @@ class SilentInstall {
     /// 使用 posix_spawnattr_set_persona_np 提权到 uid=0/gid=0
     static func spawnRoot(_ path: String, arguments: [String]) -> Int32 {
         var attrs: posix_spawnattr_t?
-        posix_spawnattr_init(&attrs)
-        defer { posix_spawnattr_destroy(&attrs) }
+        _ = posix_spawnattr_init(&attrs)
+        defer { _ = posix_spawnattr_destroy(&attrs) }
 
-        // TrollStore 标准提权流程
-        let persona: UInt64 = 99
-        let personaFlags: UInt32 = 1
-        let uid: uid_t = 0
-        let gid: gid_t = 0
+        // TrollStore 标准提权流程 — 类型与 ViewController.swift 保持一致
+        _ = posix_spawnattr_set_persona_np(&attrs, 99, 1)
+        _ = posix_spawnattr_set_persona_uid_np(&attrs, 0)
+        _ = posix_spawnattr_set_persona_gid_np(&attrs, 0)
 
-        _ = withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
-        _ = withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
-        _ = withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
-
-        let cargs = arguments.map { strdup($0) }
+        let cargs = arguments.map { strdup($0) } + [nil]
         defer { cargs.forEach { free($0) } }
 
         var pid: pid_t = 0
-        var argv = cargs + [nil]
-        let ret = argv.withUnsafeMutableBufferPointer { ptr in
+        let ret = cargs.withUnsafeMutableBufferPointer { ptr in
             posix_spawn(&pid, path, nil, &attrs, ptr.baseAddress, nil)
         }
 
@@ -973,7 +948,7 @@ class SilentInstall {
         }
 
         var status: Int32 = 0
-        waitpid(pid, &status, 0)
+        _ = waitpid(pid, &status, 0)
         return (status >> 8) & 0x000000ff
     }
 
@@ -983,31 +958,26 @@ class SilentInstall {
         guard pipe(&pipeFD) == 0 else { return nil }
 
         var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
-        posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
-        posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
+        _ = posix_spawn_file_actions_init(&fileActions)
+        _ = posix_spawn_file_actions_adddup2(&fileActions, pipeFD[1], STDOUT_FILENO)
+        _ = posix_spawn_file_actions_addclose(&fileActions, pipeFD[0])
 
         var attrs: posix_spawnattr_t?
-        posix_spawnattr_init(&attrs)
+        _ = posix_spawnattr_init(&attrs)
 
-        let persona: UInt64 = 99
-        let personaFlags: UInt32 = 1
-        let uid: uid_t = 0
-        let gid: gid_t = 0
-        _ = withUnsafePointer(to: persona) { p in posix_spawnattr_set_persona_np(&attrs, p, personaFlags) }
-        _ = withUnsafePointer(to: uid) { u in posix_spawnattr_set_persona_uid_np(&attrs, u) }
-        _ = withUnsafePointer(to: gid) { g in posix_spawnattr_set_persona_gid_np(&attrs, g) }
+        _ = posix_spawnattr_set_persona_np(&attrs, 99, 1)
+        _ = posix_spawnattr_set_persona_uid_np(&attrs, 0)
+        _ = posix_spawnattr_set_persona_gid_np(&attrs, 0)
 
-        let cargs = arguments.map { strdup($0) }
+        let cargs = arguments.map { strdup($0) } + [nil]
         defer {
             cargs.forEach { free($0) }
-            posix_spawn_file_actions_destroy(&fileActions)
-            posix_spawnattr_destroy(&attrs)
+            _ = posix_spawn_file_actions_destroy(&fileActions)
+            _ = posix_spawnattr_destroy(&attrs)
         }
 
         var pid: pid_t = 0
-        var argv = cargs + [nil]
-        let ret = argv.withUnsafeMutableBufferPointer { ptr in
+        let ret = cargs.withUnsafeMutableBufferPointer { ptr in
             posix_spawn(&pid, path, &fileActions, &attrs, ptr.baseAddress, nil)
         }
         close(pipeFD[1])
@@ -1023,7 +993,7 @@ class SilentInstall {
             if n > 0 { data.append(buffer, count: n) } else { break }
         }
         close(pipeFD[0])
-        waitpid(pid, &status, 0)
+        _ = waitpid(pid, &status, 0)
         return data.isEmpty ? nil : data
     }
 

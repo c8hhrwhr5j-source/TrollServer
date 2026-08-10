@@ -247,7 +247,7 @@ class InstallAPI {
         }
 
         var status: Int32 = 0
-        waitpid(pid, &status, 0)
+        _ = waitpid(pid, &status, 0)
         return (status >> 8) & 0x000000ff
     }
 

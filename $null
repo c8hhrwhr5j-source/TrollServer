@@ -1,0 +1,3 @@
+FINDSTR: Cannot open C:\Users\wuping\troll_extract\app\Payload\TrollAutoScript.app\TrollAutoScript ; echo ---; cmd /c findstr
+FINDSTR: Cannot open /i
+FINDSTR: Cannot open rebootView
