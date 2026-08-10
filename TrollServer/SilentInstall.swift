@@ -303,19 +303,9 @@ class SilentInstall {
             return (false, "可执行文件头读取失败")
         }
         let magic = magicData.withUnsafeBytes { $0.load(as: UInt32.self) }
-        let validMagics: Set<UInt32> = [
-            0xFEEDFACE,  // MH_MAGIC (32-bit)
-            0xFEEDFACF,  // MH_CIGAM (32-bit swapped)
-            0xBEBAFECA,  // FAT_MAGIC (Universal)
-            0xCAFEBABE,  // FAT_CIGAM
-            0xFEEDFACF,  // (duplicate for clarity)
-        ]
-        // Simpler: check FAT magic and MH magic
-        let isMachO = (magic == 0xFEEDFACE || magic == 0xFEEDFACF || magic == 0xBEBAFECA || magic == 0xCAFEBABE)
-        if !isMachO {
-            // Also check 64-bit magic
-            let isMachO64 = (magic == 0xFEEDFACF)
-        }
+        // FAT magic and MH magic (32+64-bit)
+        let isMachO = (magic == 0xFEEDFACE || magic == 0xFEEDFACF || magic == 0xBEBAFECA || magic == 0xCAFEBABE
+                        || magic == 0xFEEDFACF || magic == 0xCFFAEDFE || magic == 0xCEFAEDFE)
 
         // 6. PkgInfo 存在（非必需，但警告）
         let pkgPath = "\(appPath)/PkgInfo"
@@ -359,7 +349,7 @@ class SilentInstall {
 
         // ---- 步骤1: 文件校验 ----
         report(progress, .progress(phase: "文件校验", detail: "正在验证 IPA 文件...", percent: 5))
-        let validateResult = validateIPA(at: path)
+        let validateResult = validateIPA(at: ipaPath)
         guard validateResult.ok else {
             return .failure(message: "IPA 验证失败: \(validateResult.detail)")
         }
@@ -508,16 +498,18 @@ class SilentInstall {
             // 三参数版本: installApplication:withOptions:error:
             if selName == "installApplication:withOptions:error:" {
                 var error: NSError?
-                let _ = withUnsafeMutablePointer(to: &error) { errorPtr in
-                    // 使用 NSInvocation 方式（更安全的动态调用）
-                    workspace.perform(installSel, with: appURL, with: options as NSDictionary, with: errorPtr)
-                    return errorPtr
+                typealias InstallFunc = @convention(c) (AnyObject, Selector, Any, Any, UnsafeMutablePointer<NSError?>) -> Bool
+                let imp = workspace.method(for: installSel)
+                let install = unsafeBitCast(imp, to: InstallFunc.self)
+                let ok = install(workspace, installSel, appURL, options as NSDictionary, &error)
+                if ok {
+                    usleep(2000000)
+                    return (true, "LSApplicationWorkspace 安装调用完成")
                 }
                 if let err = error {
                     return (false, "LSWorkspace 安装错误: \(err.localizedDescription)")
                 }
-                usleep(2000000)
-                return (true, "LSApplicationWorkspace 安装调用完成")
+                return (false, "LSWorkspace 安装返回失败")
             }
         }
 
@@ -580,26 +572,6 @@ class SilentInstall {
         MIInstallCallbackBridge.shared = { success, message in
             installResult = (success, message)
             semaphore.signal()
-        }
-
-        let callback: MIInstallCallback = { dict in
-            guard let dict = dict as? [String: Any] else {
-                MIInstallCallbackBridge.shared?(false, "回调数据格式错误")
-                return
-            }
-
-            if let error = dict["Error"] as? String {
-                MIInstallCallbackBridge.shared?(false, error)
-                return
-            }
-
-            if let status = dict["Status"] as? String {
-                if status == "Complete" {
-                    MIInstallCallbackBridge.shared?(true, "安装完成")
-                } else if status == "Install" {
-                    print("[SilentInstall] MI 安装中: \(dict)")
-                }
-            }
         }
 
         let rc = installFunc(appPath as CFString, options as CFDictionary, nil, nil)

@@ -176,9 +176,9 @@ class InstallAPI {
             SilentInstall.install(ipaPath: destPath, progress: nil) { result in
                 switch result {
                 case .success(let message, _):
-                    self.sendResponse(conn, status: 200, body: jsonOK(message))
+                    self.sendResponse(conn, status: 200, body: self.jsonOK(message))
                 case .failure(let message):
-                    self.sendResponse(conn, status: 500, body: jsonError(message))
+                    self.sendResponse(conn, status: 500, body: self.jsonError(message))
                 case .progress:
                     break
                 }
