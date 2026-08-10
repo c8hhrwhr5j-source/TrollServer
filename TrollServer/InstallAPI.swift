@@ -75,7 +75,8 @@ class InstallAPI {
 
     private func handleConnection(_ conn: NWConnection) {
         conn.stateUpdateHandler = { state in
-            if state == .ready {
+            switch state {
+            case .ready:
                 conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
                     guard let self = self, let data = data, error == nil else {
                         conn.cancel()
@@ -83,8 +84,10 @@ class InstallAPI {
                     }
                     self.processRequest(data, on: conn)
                 }
-            } else if state == .failed || state == .cancelled {
+            case .failed, .cancelled:
                 conn.cancel()
+            default:
+                break
             }
         }
         conn.start(queue: .global(qos: .userInitiated))
@@ -267,7 +270,7 @@ class InstallAPI {
 
         var status: Int32 = 0
         waitpid(pid, &status, 0)
-        return WEXITSTATUS(status)
+        return (status >> 8) & 0x000000ff
     }
 
     // MARK: - HTTP 响应构建

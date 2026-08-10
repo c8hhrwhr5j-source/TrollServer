@@ -52,6 +52,12 @@ fi
 echo "[*] Copying Info.plist..."
 cp "$SRC_DIR/Info.plist" "$BUILD_DIR/$APP_NAME.app/"
 
+echo "[*] Copying app icons..."
+ICONSET_DIR="$SRC_DIR/Assets.xcassets/AppIcon.appiconset"
+if [ -d "$ICONSET_DIR" ]; then
+    cp "$ICONSET_DIR"/*.png "$BUILD_DIR/$APP_NAME.app/"
+fi
+
 echo "[*] Signing..."
 ldid2 -S"$SRC_DIR/TrollServer.entitlements" "$BUILD_DIR/$APP_NAME.app/$APP_NAME"
 
