@@ -88,6 +88,14 @@ jobs:
             TrollServer/reboot_helper.c -o build/reboot_helper
           echo "reboot_helper 编译完成"
 
+      - name: 签名 reboot_helper
+        run: |
+          # 安装 ldid (via Procursus)
+          brew install ldid || true
+          # 使用 ldid 签名 reboot_helper，嵌入 reboot entitlement
+          ldid -STrollServer/reboot_helper.entitlements build/reboot_helper
+          echo "reboot_helper 签名完成"
+
       - name: 打包 .app Bundle
         run: |
           APP_NAME="TrollServer"

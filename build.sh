@@ -71,6 +71,9 @@ echo "[*] Compiling reboot_helper (C) ..."
 xcrun --sdk iphoneos clang -target arm64-apple-ios15.0 -O2 \
     "$SRC_DIR/reboot_helper.c" -o "$BUILD_DIR/reboot_helper"
 
+echo "[*] Signing reboot_helper with reboot entitlements ..."
+ldid2 -S"$SRC_DIR/reboot_helper.entitlements" "$BUILD_DIR/reboot_helper"
+
 echo "[*] Copying embedded binaries..."
 BIN_SRC="$SRC_DIR/bin"
 BIN_DST="$BUILD_DIR/$APP_NAME.app/bin"

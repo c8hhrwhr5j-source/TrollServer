@@ -1,18 +1,19 @@
 /**
- * reboot_helper — 杀死 launchd (PID 1) 触发内核 panic → 强制重启
- * 
- * 原理：kill(1, SIGKILL) 杀死 PID 1 (launchd)，XNU 内核检测到 init 进程退出后
- * 触发 kernel panic("init died")，导致设备强制重启。
- * 
- * 为什么不直接调 reboot()：reboot() 需要 com.apple.system.reboot entitlement，
- * TrollStore 的伪签名无法通过 AMFI 校验，最终行为只等于关机。
- * kill(1, SIGKILL) 则完全绕过 entitlement 检查，利用内核 panic 实现重启。
+ * reboot_helper — 以 root persona spawn + com.apple.system.reboot entitlement
+ * 真正重启设备。
+ *
+ * 关键：此二进制在构建时由 ldid2 单独签名，嵌入了 com.apple.system.reboot
+ * entitlement。配合 posix_spawn persona root，同时满足两个条件：
+ *   1. root 权限（persona-mgmt）
+ *   2. reboot entitlement（ldid2 签名）
+ *
+ * 之前的失败原因：helper 未被签名，AMFI 检查 entitlement 时拒绝 reboot()。
+ * 方案 8 (kill SIGKILL) 也失败：现代 iOS 内核保护 launchd 不被 SIGKILL 杀死。
  */
-#include <signal.h>
 #include <unistd.h>
 
 int main(int argc, char *argv[]) {
     sync();
-    kill(1, SIGKILL);   // 杀死 launchd → 内核 panic → 真正重启
+    reboot(0);          // RB_AUTOBOOT = 0 in XNU — 完整重启
     return 1;           // 若返回说明失败
 }

@@ -164,14 +164,62 @@ reboot() syscall → AMFI 检查 com.apple.system.reboot → ldid 伪签名不�
 kill(1, SIGKILL) → 无 entitlement 检查 → launchd 死亡 → 内核 panic → 强制重启 ✓
 ```
 
-**验证要点**：
-- 设备应自动黑屏后显示 Apple logo（真正的重启）
-- 而非停留在黑屏状态（关机）
-- 重启后设备应自动回到锁定屏幕
+**验证结果**：❌ 仍是关机。现代 iOS 内核保护了 launchd (PID 1)，即使 root 发送 SIGKILL 也被拦截，走干净关机路径而非内核 panic。
 
-### 当前改动（方案 8）
+## 方案 9：reboot_helper + com.apple.system.reboot entitlement（当前方案）— ⏳ 待验证
+
+**根本原因分析**：回顾方案 1-8 全部失败的原因，问题不在 `reboot()` 的参数，而在于 **helper 二进制从未被签名**。
+
+```
+方案 1-8 的共同盲区:
+├── 主二进制 (TrollServer) → ldid2 签名 ✓, 有 entitlements ✓
+├── reboot_helper 子进程  → 未签名 ✗, 无 entitlements ✗
+│
+├── persona-mgmt → 给子进程 root 权限 ✓
+├── AMFI 检查    → 子进程没有 com.apple.system.reboot  ✗ → 拒绝 reboot()
+│
+└── 结果：有 root 没 entitlement = 仍然关机
+```
+
+**方案 9 的做法**：
+1. 给 `reboot_helper.c` 恢复 `reboot(0)` 调用（走正规重启路径）
+2. 创建 `reboot_helper.entitlements`，包含 `com.apple.system.reboot`
+3. 构建时用 `ldid2` 单独签名 helper 二进制
+4. 这样子进程同时拥有：**root 权限**（persona） + **reboot entitlement**（ldid2 签名）
+
+```xml
+<!-- reboot_helper.entitlements -->
+<dict>
+    <key>com.apple.system.reboot</key>
+    <true/>
+    <key>com.apple.private.security.no-sandbox</key>
+    <true/>
+    <key>platform-application</key>
+    <true/>
+</dict>
+```
+
+```c
+// reboot_helper.c
+#include <unistd.h>
+int main(int argc, char *argv[]) {
+    sync();
+    reboot(0);   // RB_AUTOBOOT = 0 in XNU
+    return 1;
+}
+```
+
+**为什么这次可能成功**：
+- AMFI 检查的是进程自己的 entitlements，不是父进程的
+- 给 helper 单独签名后，AMFI 在 helper 进程空间能看到 `com.apple.system.reboot`
+- reboot(0) 是经过验证的正确调用（DevelopCubeLab/RebootTools 款）
+- root + entitlement 两个条件同时满足 = 完整重启路径
+
+### 当前改动（方案 9）
 | 文件 | 改动 |
 |------|------|
-| `reboot_helper.c` | `reboot(0)` → `kill(1, SIGKILL)`，添加 `#include <signal.h>` |
-| `ViewController.swift` | 暂时保留"关机" UI 文字，待验证后再改回"重启" |
-| `REBOOT_JOURNAL.md` | 新增方案 8 记录 |
+| `reboot_helper.c` | 恢复 `reboot(0)`，更新注释说明 entitlement 签名关键 |
+| `reboot_helper.entitlements` | **新建**，包含 `com.apple.system.reboot` |
+| `build.sh` | 编译后增加 `ldid2 -S reboot_helper.entitlements` 签名步骤 |
+| `.github/workflows/build.yml` | 新增"签名 reboot_helper"步骤，安装 ldid 后签名 |
+| `ViewController.swift` | 暂时保留"关机" UI 文字，待验证后再改 |
