@@ -41,12 +41,14 @@ if [ "${1:-}" = "debug" ]; then
         -target arm64-apple-ios15.0 \
         -O0 \
         -g \
+        -lz \
         -o "$BUILD_DIR/$APP_NAME.app/$APP_NAME"
 else
     swiftc $SRC_ARGS \
         -sdk $(xcrun --sdk iphoneos --show-sdk-path) \
         -target arm64-apple-ios15.0 \
         -O \
+        -lz \
         -o "$BUILD_DIR/$APP_NAME.app/$APP_NAME"
 fi
 

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import zlib
 
 // ============================================================
 //  巨魔环境下静默安装 IPA 功能模块
@@ -80,20 +81,15 @@ class SilentInstall {
             return (false, "无法写入 /var/mobile/Documents，巨魔权限可能未生效")
         }
 
-        // 测试2: 能否遍历 /var/containers/Bundle/Application（需要 root 权限）
-        if let contents = try? FileManager.default.contentsOfDirectory(atPath: "/var/containers/Bundle/Application/") {
-            if contents.isEmpty {
-                return (false, "Bundle 容器目录为空，系统状态异常")
-            }
-        } else {
-            return (false, "无法访问 /var/containers/Bundle/Application，权限不足")
+        // 测试2: 能否读取一个系统文件（证明有沙盒外读权限）
+        let testPlist = "/System/Library/CoreServices/SystemVersion.plist"
+        if !FileManager.default.isReadableFile(atPath: testPlist) {
+            return (false, "无法读取系统文件 /System/Library/CoreServices/SystemVersion.plist")
         }
 
-        // 测试3: 能否读取 /var/mobile/Library/Preferences 中的系统 plist
-        let testPlist = "/var/mobile/Library/Preferences/.GlobalPreferences.plist"
-        if !FileManager.default.isReadableFile(atPath: testPlist) {
-            // 某些系统可能不放这个文件，不作为硬性失败条件
-            print("[SilentInstall] 警告: 无法读取系统偏好文件")
+        // 测试3: 能否读取一个用户文件
+        if !FileManager.default.isReadableFile(atPath: "/var/mobile") {
+            return (false, "无法读取 /var/mobile，权限不足")
         }
 
         return (true, "权限正常，文件系统读写已就绪")
@@ -173,14 +169,7 @@ class SilentInstall {
         return nil
     }
 
-    /// 简单判断是否为 ZIP 文件（PK\x03\x04）
-    static func isZipFile(at path: String) -> Bool {
-        guard let fh = FileHandle(forReadingAtPath: path),
-              let magic = try? fh.read(upToCount: 4),
-              magic.count == 4 else { return false }
-        try? fh.close()
-        return magic == Data([0x50, 0x4B, 0x03, 0x04])
-    }
+
 
     /// 验证 IPA 文件有效性（不解压，仅校验结构）
     static func validateIPA(at path: String) -> (ok: Bool, detail: String) {
@@ -238,63 +227,176 @@ class SilentInstall {
         return (true, "IPA 文件有效，\(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))")
     }
 
-    /// 当 unzip 不可用时，用中央目录尾（EOCD）粗略枚举 ZIP 条目名
-    private static func approximateZipListing(at path: String) -> String? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe]) else {
-            return nil
-        }
-        guard data.count > 22 else { return nil }
+    // MARK: - ZIP 解析（不依赖 unzip）
 
-        // 查找 EOCD 签名 0x06054b50
-        let eocdSig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
-        var eocdOffset = -1
+    struct ZipEntry {
+        let name: String
+        let localHeaderOffset: UInt32
+        let compressedSize: UInt32
+        let uncompressedSize: UInt32
+        let compressionMethod: UInt16
+    }
+
+    private static func findEOCD(in data: Data) -> Int? {
+        guard data.count > 22 else { return nil }
+        let sig: [UInt8] = [0x50, 0x4B, 0x05, 0x06]
         for i in (0..<(data.count - 22)).reversed() {
-            if Array(data[i..<i+4]) == eocdSig {
-                eocdOffset = i
-                break
+            if Array(data[i..<i+4]) == sig {
+                // 校验 comment length 是否匹配尾部
+                let commentLen = data.withUnsafeBytes { $0.load(fromByteOffset: i + 20, as: UInt16.self) }
+                if i + 22 + Int(commentLen) == data.count {
+                    return i
+                }
             }
         }
-        guard eocdOffset >= 0 else { return nil }
+        return nil
+    }
 
-        let cdStart = Int(data.withUnsafeBytes { ptr in
-            ptr.load(fromByteOffset: eocdOffset + 16, as: UInt32.self)
-        })
-        let cdSize = Int(data.withUnsafeBytes { ptr in
-            ptr.load(fromByteOffset: eocdOffset + 12, as: UInt32.self)
-        })
-        guard cdStart + cdSize <= data.count else { return nil }
+    private static func listZipEntries(in data: Data) -> [ZipEntry] {
+        guard let eocdOffset = findEOCD(in: data) else { return [] }
+        let cdStart = Int(data.withUnsafeBytes { $0.load(fromByteOffset: eocdOffset + 16, as: UInt32.self) })
+        let cdSize = Int(data.withUnsafeBytes { $0.load(fromByteOffset: eocdOffset + 12, as: UInt32.self) })
+        guard cdStart + cdSize <= data.count else { return [] }
 
         let cdData = data.subdata(in: cdStart..<cdStart + cdSize)
-        var entries: [String] = []
+        var entries: [ZipEntry] = []
         var offset = 0
         while offset + 46 <= cdData.count {
             let sig = cdData.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
             guard sig == 0x02014B50 else { break }
+            let compressionMethod = cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 10, as: UInt16.self) }
+            let compressedSize = cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 20, as: UInt32.self) }
+            let uncompressedSize = cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 24, as: UInt32.self) }
             let nameLen = Int(cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 28, as: UInt16.self) })
             let extraLen = Int(cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 30, as: UInt16.self) })
             let commentLen = Int(cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 32, as: UInt16.self) })
-            let start = offset + 46
-            let end = start + nameLen
-            guard end <= cdData.count else { break }
-            if let name = String(data: cdData.subdata(in: start..<end), encoding: .utf8) {
-                entries.append(name)
-            }
-            offset = end + extraLen + commentLen
+            let localHeaderOffset = cdData.withUnsafeBytes { $0.load(fromByteOffset: offset + 42, as: UInt32.self) }
+            let nameStart = offset + 46
+            let nameEnd = nameStart + nameLen
+            guard nameEnd <= cdData.count else { break }
+            let name = String(data: cdData.subdata(in: nameStart..<nameEnd), encoding: .utf8) ?? ""
+            entries.append(ZipEntry(
+                name: name,
+                localHeaderOffset: localHeaderOffset,
+                compressedSize: compressedSize,
+                uncompressedSize: uncompressedSize,
+                compressionMethod: compressionMethod
+            ))
+            offset = nameEnd + extraLen + commentLen
         }
-        return entries.joined(separator: "\n")
+        return entries
     }
 
-    /// 从 IPA 提取 Info.plist 信息
-    static func extractBundleInfo(from ipaPath: String) -> IPABundleInfo? {
-        guard let plistData = spawnAndCapture("/bin/sh", arguments: [
-            "-c", "unzip -p '\(ipaPath)' 'Payload/*/Info.plist' 2>/dev/null"
-        ]) else {
+    private static func findZipEntry(namedPattern pattern: String, in data: Data) -> ZipEntry? {
+        let entries = listZipEntries(in: data)
+        // 简单通配符：把 * 转换为 .* 做前缀/后缀匹配
+        let parts = pattern.split(separator: "*", omittingEmptySubsequences: false)
+        return entries.first { entry in
+            var remaining = entry.name
+            for (idx, part) in parts.enumerated() {
+                let partStr = String(part)
+                if idx == 0 {
+                    if !partStr.isEmpty && !remaining.hasPrefix(partStr) { return false }
+                    remaining = String(remaining.dropFirst(partStr.count))
+                } else if idx == parts.count - 1 {
+                    if !partStr.isEmpty && !remaining.hasSuffix(partStr) { return false }
+                    remaining = ""
+                } else {
+                    if let range = remaining.range(of: partStr) {
+                        remaining = String(remaining[range.upperBound...])
+                    } else {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
+    }
+
+    private static func extractZipEntry(_ entry: ZipEntry, from data: Data) -> Data? {
+        guard entry.localHeaderOffset + 30 <= data.count else { return nil }
+        let local = entry.localHeaderOffset
+        let nameLen = Int(data.withUnsafeBytes { $0.load(fromByteOffset: local + 26, as: UInt16.self) })
+        let extraLen = Int(data.withUnsafeBytes { $0.load(fromByteOffset: local + 28, as: UInt16.self) })
+        let dataOffset = Int(local) + 30 + nameLen + extraLen
+        let endOffset = dataOffset + Int(entry.compressedSize)
+        guard endOffset <= data.count else { return nil }
+        let compressed = data.subdata(in: dataOffset..<endOffset)
+
+        if entry.compressionMethod == 0 {
+            return compressed
+        } else if entry.compressionMethod == 8 {
+            return inflateDeflate(compressed, expectedSize: Int(entry.uncompressedSize))
+        }
+        return nil
+    }
+
+    private static func inflateDeflate(_ compressed: Data, expectedSize: Int) -> Data? {
+        guard expectedSize > 0 else { return Data() }
+        var output = Data(count: expectedSize)
+        var stream = z_stream()
+        var status = compressed.withUnsafeBytes { src in
+            output.withUnsafeMutableBytes { dst in
+                stream.next_in = UnsafeMutablePointer<Bytef>(mutating: src.bindMemory(to: Bytef.self).baseAddress!)
+                stream.avail_in = uInt(compressed.count)
+                stream.next_out = dst.bindMemory(to: Bytef.self).baseAddress!
+                stream.avail_out = uInt(expectedSize)
+                return inflateInit2_(&stream, -15, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+            }
+        }
+        guard status == Z_OK else { return nil }
+        status = inflate(&stream, Z_FINISH)
+        inflateEnd(&stream)
+        guard status == Z_STREAM_END else { return nil }
+        output.count = Int(stream.total_out)
+        return output
+    }
+
+    private static func extractAllZipEntries(from data: Data, toDirectory dir: String) -> Bool {
+        let entries = listZipEntries(in: data)
+        guard !entries.isEmpty else { return false }
+        for entry in entries {
+            guard let raw = extractZipEntry(entry, from: data) else { continue }
+            let destPath = "\(dir)/\(entry.name)"
+            let destURL = URL(fileURLWithPath: destPath)
+            let dirPath = destURL.deletingLastPathComponent().path
+            if !FileManager.default.fileExists(atPath: dirPath) {
+                try? FileManager.default.createDirectory(atPath: dirPath, withIntermediateDirectories: true)
+            }
+            if entry.name.hasSuffix("/") {
+                try? FileManager.default.createDirectory(atPath: destPath, withIntermediateDirectories: true)
+            } else {
+                try? raw.write(to: destURL)
+            }
+        }
+        return true
+    }
+
+    private static func approximateZipListing(at path: String) -> String? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe]) else {
             return nil
         }
+        let entries = listZipEntries(in: data)
+        return entries.map { $0.name }.joined(separator: "\n")
+    }
 
-        guard let plist = try? PropertyListSerialization.propertyList(
-            from: plistData, options: [], format: nil
-        ) as? [String: Any] else {
+    /// 简单判断是否为 ZIP 文件（PK\x03\x04）
+    static func isZipFile(at path: String) -> Bool {
+        guard let fh = FileHandle(forReadingAtPath: path),
+              let magic = try? fh.read(upToCount: 4),
+              magic.count == 4 else { return false }
+        try? fh.close()
+        return magic == Data([0x50, 0x4B, 0x03, 0x04])
+    }
+
+    /// 从 IPA 提取 Info.plist 信息（不依赖 unzip，直接解析 ZIP）
+    static func extractBundleInfo(from ipaPath: String) -> IPABundleInfo? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: ipaPath), options: [.mappedIfSafe]),
+              let entry = findZipEntry(namedPattern: "Payload/*/Info.plist", in: data),
+              let plistData = extractZipEntry(entry, from: data),
+              let plist = try? PropertyListSerialization.propertyList(
+                from: plistData, options: [], format: nil
+              ) as? [String: Any] else {
             return nil
         }
 
@@ -306,12 +408,11 @@ class SilentInstall {
         )
     }
 
-    /// 解压 IPA 并返回临时目录中的 .app 路径
+    /// 解压 IPA 并返回临时目录中的 .app 路径（不依赖系统 unzip）
     static func extractApp(from ipaPath: String) -> (appPath: String?, error: String?) {
         let tmpRoot = "/var/mobile/Documents/.silent_install_tmp"
         let extractionDir = "\(tmpRoot)/\(UUID().uuidString)"
 
-        // 清理并创建目录
         try? FileManager.default.removeItem(atPath: extractionDir)
         do {
             try FileManager.default.createDirectory(atPath: extractionDir, withIntermediateDirectories: true)
@@ -319,14 +420,15 @@ class SilentInstall {
             return (nil, "创建解压目录失败: \(error.localizedDescription)")
         }
 
-        // 调用 unzip 解压
-        let ret = spawnAndWait("/usr/bin/unzip", arguments: ["-q", "-o", ipaPath, "-d", extractionDir])
-        guard ret == 0 else {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: ipaPath), options: [.mappedIfSafe]) else {
             try? FileManager.default.removeItem(atPath: extractionDir)
-            return (nil, "unzip 解压失败，退出码: \(ret)")
+            return (nil, "无法读取 IPA 文件")
+        }
+        if !extractAllZipEntries(from: data, toDirectory: extractionDir) {
+            try? FileManager.default.removeItem(atPath: extractionDir)
+            return (nil, "ZIP 解压失败（可能是 DEFLATE 不支持）")
         }
 
-        // 扫描 Payload 目录下的 .app 包
         let payloadDir = "\(extractionDir)/Payload"
         guard let contents = try? FileManager.default.contentsOfDirectory(atPath: payloadDir) else {
             try? FileManager.default.removeItem(atPath: extractionDir)
@@ -339,7 +441,6 @@ class SilentInstall {
             return (nil, "Payload 中未找到 .app 包")
         }
 
-        // 验证 .app 包完整性
         let appPath = "\(payloadDir)/\(appName)"
         let validation = validateAppBundle(at: appPath)
         if !validation.ok {
@@ -347,9 +448,7 @@ class SilentInstall {
             return (nil, ".app 包验证失败: \(validation.detail)")
         }
 
-        // 清理旧的解压残留（保留当前解压目录）
         cleanupOldExtractions(tmpRoot, keep: extractionDir)
-
         return (appPath, nil)
     }
 
@@ -448,57 +547,62 @@ class SilentInstall {
             }
         }
 
-        // ---- 步骤2: 提取包信息 ----
+        // ---- 步骤2: 提取包信息（失败不阻塞） ----
         report(progress, .progress(phase: "信息提取", detail: "正在读取应用信息...", percent: 10))
-        guard let bundleInfo = extractBundleInfo(from: ipaPath) else {
-            return .failure(message: "无法从 IPA 中提取应用信息")
+        let bundleInfo = extractBundleInfo(from: ipaPath)
+        if let info = bundleInfo {
+            print("[SilentInstall] 应用: \(info.displayName) (\(info.bundleIdentifier)) v\(info.version)")
+            // 强制关闭目标应用
+            report(progress, .progress(phase: "准备安装", detail: "正在关闭旧版本...", percent: 15))
+            forceKillApp(executableName: info.executableName)
+            usleep(500000)
+        } else {
+            print("[SilentInstall] 警告: 无法从 IPA 中提取应用信息，将继续尝试安装")
         }
-        print("[SilentInstall] 应用: \(bundleInfo.displayName) (\(bundleInfo.bundleIdentifier)) v\(bundleInfo.version)")
 
-        // ---- 步骤3: 强制关闭目标应用 ----
-        report(progress, .progress(phase: "准备安装", detail: "正在关闭旧版本...", percent: 15))
-        forceKillApp(executableName: bundleInfo.executableName)
-        usleep(500000)
-
-        // ---- 步骤4: 解压并验证 .app ----
+        // ---- 步骤3: 预解压 .app（失败不阻塞） ----
         report(progress, .progress(phase: "解压验证", detail: "正在解压并验证应用包...", percent: 20))
         let extractResult = extractApp(from: ipaPath)
+        var extractedAppPath: String? = nil
         if let error = extractResult.error {
             print("[SilentInstall] 预解压失败（非致命，将继续安装）: \(error)")
         } else if let appPath = extractResult.appPath {
             print("[SilentInstall] .app 解压完成: \(appPath)")
+            extractedAppPath = appPath
         }
 
         // ---- 步骤5: 尝试安装（多策略） ----
-        let strategies: [(InstallMethod, (String) -> (Bool, String))] = [
-            (.trollstorehelper, installViaHelper),
-            (.lsApplicationWorkspace, installViaLSWorkspace),
-            (.mobileInstallation, installViaMobileInstallation),
-            (.fileCopy, installViaFileCopy),
-        ]
-
+        // ---- 步骤4: 尝试安装（多策略） ----
         var lastError = ""
+        let targetPath = extractedAppPath ?? ipaPath
+        let isAppPath = extractedAppPath != nil
+
+        let strategies: [(InstallMethod, () -> (Bool, String))] = [
+            (.trollstorehelper, { installViaHelper(targetPath, isAppPath: isAppPath) }),
+            (.lsApplicationWorkspace, { installViaLSWorkspace(targetPath) }),
+            (.mobileInstallation, { installViaMobileInstallation(targetPath) }),
+            (.fileCopy, { installViaFileCopy(ipaPath) }),
+        ]
 
         for (method, strategy) in strategies {
             report(progress, .progress(phase: "正在安装", detail: "尝试: \(method.rawValue)...", percent: 30))
-            let (ok, msg) = strategy(ipaPath)
+            let (ok, msg) = strategy()
             print("[SilentInstall] \(method.rawValue): \(ok ? "成功" : "失败") — \(msg)")
 
             if ok {
-                // 安装成功，等待系统注册
                 report(progress, .progress(phase: "注册中", detail: "等待系统注册应用...", percent: 85))
-                usleep(1500000) // 1.5s
+                usleep(1500000)
 
-                // 验证安装（检查应用是否出现在容器目录中）
                 report(progress, .progress(phase: "验证安装", detail: "正在验证安装结果...", percent: 95))
-                if verifyInstall(bundleID: bundleInfo.bundleIdentifier) {
+                let verifyOK = bundleInfo.map { verifyInstall(bundleID: $0.bundleIdentifier) } ?? true
+                if verifyOK {
                     report(progress, .progress(phase: "完成", detail: "安装并验证成功", percent: 100))
+                    let appDesc = bundleInfo.map { "\($0.displayName) v\($0.version)" } ?? "IPA"
                     return .success(
-                        message: "\(bundleInfo.displayName) v\(bundleInfo.version) 安装成功\n方法: \(method.rawValue)",
+                        message: "\(appDesc) 安装成功\n方法: \(method.rawValue)",
                         method: method
                     )
                 } else {
-                    // 安装工具返回成功但验证失败，继续尝试其他方法
                     print("[SilentInstall] \(method.rawValue) 返回成功但验证失败，尝试下一种方案")
                     lastError = "\(method.rawValue) 安装返回成功但应用未注册到系统"
                     continue
@@ -516,13 +620,14 @@ class SilentInstall {
     // MARK: - ═══ 安装策略1: trollstorehelper ═══
     // ============================================================
 
-    private static func installViaHelper(ipaPath: String) -> (Bool, String) {
+    private static func installViaHelper(_ targetPath: String, isAppPath: Bool) -> (Bool, String) {
         guard let helper = findTrollStoreHelper() else {
             return (false, "trollstorehelper 未找到")
         }
 
-        print("[SilentInstall] 调用: \(helper) install \(ipaPath)")
-        let ret = spawnAndWait(helper, arguments: ["install", ipaPath])
+        // trollstorehelper 的 install 命令可以接收 .ipa 或 .app 路径
+        print("[SilentInstall] 调用: \(helper) install \(targetPath)")
+        let ret = spawnAndWait(helper, arguments: ["install", targetPath])
         if ret == 0 {
             return (true, "trollstorehelper 返回成功")
         } else {
@@ -770,13 +875,16 @@ class SilentInstall {
         _ = spawnAndWait("/bin/sh", arguments: ["-c", "killall -9 \(executableName) 2>/dev/null; true"])
     }
 
-    /// 查找 trollstorehelper
+    /// 查找 trollstorehelper（参照 TrollStoreRemoteHelper 实现）
     static func findTrollStoreHelper() -> String? {
+        // 1. 常见绝对路径
         let knownPaths = [
+            "/Applications/TrollStore.app/trollstorehelper",
+            "/var/jb/Applications/TrollStore.app/trollstorehelper",
+            "/private/var/jb/Applications/TrollStore.app/trollstorehelper",
             "/var/jb/usr/bin/trollstorehelper",
             "/usr/bin/trollstorehelper",
             "/usr/local/bin/trollstorehelper",
-            "/Applications/TrollStore.app/trollstorehelper",
             "/private/var/jb/usr/bin/trollstorehelper",
         ]
         for path in knownPaths {
@@ -785,20 +893,27 @@ class SilentInstall {
             }
         }
 
-        // 运行时搜索
-        let searchDirs = [
-            "/Applications/TrollStore.app",
-            "/var/jb/usr/bin",
-            "/private/var/jb/usr/bin",
-            "/usr/bin",
-            "/usr/local/bin",
-        ]
-        for dir in searchDirs {
-            let path = "\(dir)/trollstorehelper"
-            if FileManager.default.isExecutableFile(atPath: path) {
-                return path
+        // 2. 扫描 /var/containers/Bundle/Application 下的 TrollStore.app
+        let appContainersPath = "/var/containers/Bundle/Application"
+        if let containers = try? FileManager.default.contentsOfDirectory(atPath: appContainersPath) {
+            for container in containers {
+                let candidate = "\(appContainersPath)/\(container)/TrollStore.app/trollstorehelper"
+                if FileManager.default.isExecutableFile(atPath: candidate) {
+                    return candidate
+                }
             }
         }
+
+        // 3. 扫描 /Applications 下所有 .app
+        if let apps = try? FileManager.default.contentsOfDirectory(atPath: "/Applications") {
+            for app in apps where app.hasSuffix(".app") {
+                let candidate = "/Applications/\(app)/trollstorehelper"
+                if FileManager.default.isExecutableFile(atPath: candidate) {
+                    return candidate
+                }
+            }
+        }
+
         return nil
     }
 
