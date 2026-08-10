@@ -90,7 +90,7 @@ class ViewController: UIViewController {
     // MARK: - 日志系统
     // ============================================================
 
-    private enum LogLevel { case info, success, error, progress }
+    private enum LogLevel { case info, success, error, progress, warn }
 
     private func appLog(_ msg: String, level: LogLevel = .info) {
         let ts = logFmt.string(from: Date())
@@ -101,6 +101,7 @@ class ViewController: UIViewController {
         case .success:  color = UIColor.systemGreen
         case .error:    color = UIColor.systemRed
         case .progress: color = UIColor.systemOrange
+        case .warn:     color = UIColor.systemYellow
         }
 
         logWriteQueue.async {
@@ -303,6 +304,22 @@ class ViewController: UIViewController {
         btn.layer.cornerRadius = 10; btn.translatesAutoresizingMaskIntoConstraints = false
         btn.heightAnchor.constraint(equalToConstant: 48).isActive = true
         btn.addTarget(self, action: action, for: .touchUpInside)
+        btn.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
+        btn.addTarget(self, action: #selector(buttonTouchUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+    }
+
+    @objc private func buttonTouchDown(_ sender: UIButton) {
+        UIView.animate(withDuration: 0.1, delay: 0, options: .curveEaseOut, animations: {
+            sender.transform = CGAffineTransform(scaleX: 0.93, y: 0.93)
+            sender.alpha = 0.85
+        })
+    }
+
+    @objc private func buttonTouchUp(_ sender: UIButton) {
+        UIView.animate(withDuration: 0.15, delay: 0, options: .curveEaseInOut, animations: {
+            sender.transform = .identity
+            sender.alpha = 1.0
+        })
     }
 
     private func makeButtonRow(_ btns: [UIButton]) -> UIStackView {
