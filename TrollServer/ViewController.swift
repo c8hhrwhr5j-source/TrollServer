@@ -45,6 +45,7 @@ class ViewController: UIViewController {
     // 临时存储
     private var downloadedIPAPath: String?
     private var activeDownloadDelegate: DownloadDelegate? // 持有 delegate 防止被释放
+    private var downloadSession: URLSession?             // 持有 session 防止被提前释放
 
     // ============================================================
     // MARK: - 硬编码下载地址（主 → 备用）
@@ -67,6 +68,7 @@ class ViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        UIApplication.shared.isIdleTimerDisabled = true // 屏幕常亮，防止自动锁屏
         setupUI()
         startRefreshTimer()
         updateStatus()
@@ -83,6 +85,7 @@ class ViewController: UIViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        UIApplication.shared.isIdleTimerDisabled = false // 离开页面时恢复默认
         refreshTimer?.invalidate()
     }
 
@@ -699,12 +702,17 @@ class ViewController: UIViewController {
             return
         }
 
-        // 使用 delegate-based session 获取进度
+        // 取消上一次可能还残留的下载，防止 delegate 回调混乱
+        activeDownloadDelegate = nil
+        downloadSession?.invalidateAndCancel()
+        downloadSession = nil
+
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 300
         let delegate = DownloadDelegate(urlStr: urlStr, isPrimary: isPrimary, parent: self)
-        activeDownloadDelegate = delegate // 保持强引用
+        activeDownloadDelegate = delegate
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        downloadSession = session // 持有引用，防止被系统提前释放
 
         let task = session.downloadTask(with: url)
         task.resume()
@@ -741,6 +749,15 @@ class ViewController: UIViewController {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+
+            // 防止已经有其他 controller 正在 present 导致崩溃
+            if self.presentedViewController != nil {
+                self.appLog("⚠ 页面正在显示其他弹窗，请关闭后重试", level: .warn)
+                self.progressLabel.text = "请关闭当前弹窗后重新下载"
+                self.resetDownloadBtn()
+                return
+            }
+
             let fileURL = URL(fileURLWithPath: destPath)
             let activityVC = UIActivityViewController(activityItems: [fileURL], applicationActivities: nil)
 
@@ -794,6 +811,8 @@ class ViewController: UIViewController {
     private func resetDownloadBtn() {
         downloadBtn.isEnabled = true
         downloadBtn.setTitle("下载应用", for: .normal)
+        activeDownloadDelegate = nil
+        downloadSession = nil
     }
 
     // ============================================================
